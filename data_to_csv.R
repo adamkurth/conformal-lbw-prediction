@@ -3,7 +3,7 @@ library(rnn)
 # 2021 Data
 
 year <- 2021
-file_path <- sprintf("~/Dropbox (ASU)/Palak_Hahn/Birthweight Data/natality%dus.csv", year)
+file_path <- sprintf("/Users/adamkurth/Documents/RStudio/ms-thesis-kurth/birthweight_data/natality%dus.csv", year)
 natalitydata <- read.csv(file_path)
 names(natalitydata)
 
