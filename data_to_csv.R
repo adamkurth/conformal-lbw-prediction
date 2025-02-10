@@ -3,7 +3,9 @@ library(rnn)
 # 2021 Data
 
 year <- 2021
-file_path <- sprintf("/Users/adamkurth/Documents/RStudio/ms-thesis-kurth/birthweight_data/natality%dus.csv", year)
+data.pwd <- "/Users/adamkurth/Documents/RStudio/ms-thesis-kurth/birthweight_data"
+#file_path <- sprintf("/Users/adamkurth/Documents/RStudio/ms-thesis-kurth/birthweight_data/natality%dus.csv", year)
+file_path <- sprintf("%s/natality%dus.csv", data.pwd, year)
 natalitydata <- read.csv(file_path)
 names(natalitydata)
 
@@ -32,8 +34,8 @@ num_node <- 2^p
 
 
 dat <- na.omit(dat)
-X <- dat[-ncol(dat)]
-y <- log(dat$dbwt)
+X <- dat[-ncol(dat)] # remove the response variable
+y <- log(dat$dbwt) # log-transform the birth weight
 
 xnode <- apply(X[, 1:p], 1, function(a) bin2int(t(as.matrix(as.numeric(a), 1, p))) + 1)
 
@@ -73,7 +75,6 @@ count_above_2.5kg <- tapply(dat$dbwt>2500, xnode, sum)
 n <- sum(n_in_node)
 
 # Combine the results into a data frame
-
 results <- data.frame(
   var_y = var_y,
   sum_y = sum_y,
@@ -87,8 +88,6 @@ results <- data.frame(
   
 )
 
-
-
 # Write the data frame to a CSV file
-file_path <- sprintf("~/Dropbox (ASU)/Palak_Hahn/Birthweight Data/results_df_%d.csv", year)
-write.csv(cbind(results, counts_df, count_above_2.5kg = count_above_2.5kg), file_path, row.names = FALSE)
+file_path_out <- sprintf("%s/results%dus.csv", data.pwd, year)
+write.csv(cbind(results, counts_df, count_above_2.5kg = count_above_2.5kg), file_path_out, row.names = FALSE)
