@@ -13,21 +13,20 @@ keep <- c("count_btw_0_0.25kg",
           "count_btw_0.25_0.5kg", 
           "count_btw_0.5_0.75kg", 
           "count_btw_0.75_1kg", 
-          "count_above_2.5kg", 
+          "count_above_2.5kg",
           "n_in_node")
-data <- results[, keep]
-cat("Dimension of data:", dim(data), "\n")
+
+counts.data <- results[, keep]
+cat("Dimension of data:", dim(counts.data), "\n")
 
 # Y = birthweight ()
 # X = 7 binary features (from original large.csv of binary values)
-
-cat("Dimension of dm.counts:", dim(dm.counts), "\n")
-cat("First row of dm.counts:", dm.counts[1, ], "\n")
+dim(counts.data)
 
 #-----------------------------------------------------------
 # B. Define Dirichlet-Multinomial (DM) Log-Likelihood
 #-----------------------------------------------------------
-log.dirmult.likelihood.row <- function(counts, alpha) {
+log.dirmult.likelihood <- function(counts, alpha) {
   # 'counts': integer vector (length K) of observed counts in each category
   # 'alpha': numeric vector (length K) of Dirichlet parameters (priors)
   

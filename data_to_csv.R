@@ -1,14 +1,12 @@
 library(rnn)
 
 # 2021 Data
-
 year <- 2021
 data.pwd <- "/Users/adamkurth/Documents/RStudio/ms-thesis-kurth/birthweight_data"
 #file_path <- sprintf("/Users/adamkurth/Documents/RStudio/ms-thesis-kurth/birthweight_data/natality%dus.csv", year)
 file_path <- sprintf("%s/natality%dus.csv", data.pwd, year)
 natalitydata <- read.csv(file_path)
 names(natalitydata)
-
 
 # BOY: sex
 # MARRIED: dmar
@@ -17,7 +15,7 @@ names(natalitydata)
 # HIGH SCHOOL: meduc
 # FULL PRENATAL: precare5
 # SMOKER: cig_0
-# BIRTH WEIGHT: dbwt
+# BIRTH WEIGHT: dbwt (response variable)
 
 dat <- natalitydata[,c('sex', 'dmar', 'mrace15', 'mager', 'meduc', 'precare5', 'cig_0', 'dbwt')]
 # dat <- natalitydata[,c('mrace15', 'mager','cig_0', 'dbwt')]
