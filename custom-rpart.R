@@ -1,314 +1,184 @@
 rm(list=ls())
-#-----------------------------------------------------------
-# A. Load Data & Construct Count Matrix
-#-----------------------------------------------------------
 library(rpart)
+library(rpart.plot)
+#-----------------------------------------------------------
+# A. Load Data & Construct Matrices
+#-----------------------------------------------------------
 year <- 2021
 data.pwd <- "/Users/adamkurth/Documents/RStudio/ms-thesis-kurth/birthweight_data/"
-file.path <- sprintf("%s/results%dus.csv", data.pwd, year)
-results <- read.csv(file.path)
+load(sprintf("%s/birthweight_data_%d.RData", data.pwd, year))
+Y.counts <- as.matrix(counts.df)
+Y.df <- as.data.frame(Y.matrix)
+colnames(Y.df) <- paste0("Y",seq(1:ncol(Y.df))) # name columns Y1, Y2, ...
+combined.data <- data.frame(X.matrix, Y.df)
+response.cols <- colnames(Y.df)
+cat("Dimensions of X.matrix:", dim(X.matrix), "\n")
+cat("Dimensions of Y.matrix:", dim(Y.matrix), "\n")
 
-# dimension of data, is the number of total orderings of 7 features by 2 (binary) options (2^7 = 128)
-keep <- c("count_btw_0_0.25kg", 
-          "count_btw_0.25_0.5kg", 
-          "count_btw_0.5_0.75kg", 
-          "count_btw_0.75_1kg", 
-          "count_above_2.5kg",
-          "n_in_node")
-
-counts.data <- results[, keep]
-cat("Dimension of data:", dim(counts.data), "\n")
-
-# Y = birthweight ()
+# Y = birthweight (actual, log, count)
 # X = 7 binary features (from original large.csv of binary values)
-dim(counts.data)
 
 #-----------------------------------------------------------
-# B. Define Dirichlet-Multinomial (DM) Log-Likelihood
+# B. Simplified Dirichlet-Multinomial Functions
 #-----------------------------------------------------------
-log.dirmult.likelihood <- function(counts, alpha) {
-  # 'counts': integer vector (length K) of observed counts in each category
-  # 'alpha': numeric vector (length K) of Dirichlet parameters (priors)
-  
-  N <- sum(counts) # total number of observations in this row/group
+# 'counts' is a numeric vector of counts for each category at a node. 
+# 'alpha'  is a numeric vector of Dirichlet parameters, typically alpha_j > 0.
+log.dm.likelihood <- function(counts, alpha=1) {
+  # counts: vector of counts for each category 
+  N <- sum(counts)
+  k <- length(counts)
   
   # term1 = ln Γ(Σ alpha_j) - ln Γ(N + Σ alpha_j)
-  #   => This is the difference in gamma functions for the sum of alpha vs. the sum plus total N.
-  term1 <- lgamma(sum(alpha)) - lgamma(N + sum(alpha))
+  term1 <- lgamma(k*alpha) - lgamma(N + k*alpha)
   
   # term2 = sum over j of [ ln Γ(count_j + alpha_j) - ln Γ(alpha_j) ]
-  #   => This is the multinomial-like part, summing individual gamma log-likelihood components.
   term2 <- sum(lgamma(counts + alpha) - lgamma(alpha))
   
   ll <- term1 + term2
   
-  # If extreme values cause numeric issues, clamp it to 0 and print a warning
-  if (is.na(ll) || is.infinite(ll)) {
-    cat("WARNING: DM loglike is NA/Inf. Counts=", counts, " => forcing 0.\n")
-    ll <- 0
-  }
+  if(is.na(ll) || is.infinite(ll)) return(0)  # Handle edge cases
   ll
 }
 
+dm.deviance <- function(counts.matrix, alpha=1){
+  # Pass counts.matrix directly (already summed per category)
+      cat("input: counts.matrix", counts.matrix, "\n")
+  log.dm.likelihood(counts.matrix, alpha=alpha)
+}
+
 #-----------------------------------------------------------
-# C. Define Custom DM objective function for rpart
+# C. Define Custom rpart Method (DM with log-likelihood deviance)
 #-----------------------------------------------------------
-# We define alpha=1 for each category (uniform Dirichlet prior, simple case).
-# The objective parts:
-#   1) init:  define how 'rpart' initializes the model with the multi-column response.
-#   2) eval:  compute the deviance at each node as -2 * (sum of DM log-likelihood).
-#   3) split: define how to evaluate potential splits on a predictor.
+# rpart requires a list with the following named functions:
+#    init, eval, split
+#
+# We'll define alpha=1 for each category (simple uniform prior).
+# The 'eval' function must return a $deviance scalar.
+# Here, deviance = - log_dm_likelihood( colSums(Y) ) -- i.e. negative LL.
+# 
+#    - We ignore weights (wt)
+#    - We store in "label" something descriptive (i.e. colsum)
+#    - We use the "summary" function to print the deviance in a readable way.
 
-# How does it split?
-# deviance = -2*(sum of DM log-likelihood) sum observations in a node.
-# proposed split, partitions those observations in the node to left/right subsets 
-# then compute left/right deviances and compare to parent node (called improvement from the split).
-
-K <- ncol(dm.counts)            # number of categories in your multi-column response
-alpha.global <- rep(0.05, K)   # uniform Dirichlet prior, alpha=1 for each category
-
-# Lower alpha => DM prior penalizes the "spread-out" categories less, emphasizing the differences among rows. 
-#   splits can become more valuable, resulting in deeper trees.
-# Higher alpha => DM prior is more "uniform", so within-node variation is not as strongly rewarded or penalize. Often few/no splits occr.
-#   splits can become less valuable, resulting in shallower trees.
 #----------------- 1) init() ------------------#
 myinit <- function(y, offset, parms=NULL, wt=NULL) {
-  cat("In myinit, dim(y) =", dim(y), "\n")
-  
-  if (is.null(parms)) {
-    parms <- alpha.global
-  }
-  
-  # We define both `summary` and `text` so rpart knows how to label nodes.
+  # y: matrix of response counts 
+  # offset: not used
+  # parms: list containing alpha parameter
+  # 
+  # cat("** myinit() called. Y dimension:", dim(y), "\n")
+
   list(
-    y       = y,           
-    parms   = parms,       
-    numresp = ncol(y),     
-    numy    = ncol(y),     
-    
-    # This is displayed in printcp or summary.rpart for each node
+    y = y,
+    parms = list(alpha =1),
+    numresp = ncol(y),
+    numy = ncol(y),
     summary = function(yval, dev, wt, ylevel, digits) {
-      paste("Node deviance =", format(dev, digits=digits))
+      paste("Deviance:", format(dev, digits = digits))
     },
-    
-    # This function is used by text.rpart to label nodes in the tree plot
-    text = function(yval, dev, wt, ylevel, digits, n, use.n) {
-      # yval is the node's "label"
-      # dev   is the node's deviance
-      # n     is the number of observations in each node (or child)
-      # use.n is a logical whether to show the #observations
-      if (use.n) {
-        # Show both deviance and the total n in the node
-        paste0("dev=", round(dev, digits), "\nn=", sum(n))
-      } else {
-        # Just show deviance
-        paste("dev=", round(dev, digits))
-      }
+    text = function(yval, dev, wt, ylevel, digits, n, use.n){
+      # yval is the colsum from myeval(); a vector of category counts.
+      # keep labels short.
+      total.counts <- sum(yval)
+      # dev.str <- format(dev, digits=2)
+      # lbl <- paste0("Total=", total.counts, ", Dev=", dev.str)
+      lbl <- paste0(format(total.counts, digits=4))
+      if (use.n) lbl <- paste(lbl, "\nn", n)
+      return(lbl)
     }
   )
 }
 
 #----------------- 2) eval() ------------------#
-myeval <- function(y, wt, parms) {
-  # 'y' is the subset of rows in this node,
-  # 'wt' is the vector of weights (if used),
-  # 'parms' is where alpha is stored.
-
-  alpha <- parms
-  node.loglike <- 0
+myeval <- function(y, wt=NULL, parms=1) {
+  # y: response matrix subset for current node
+  # wt: weights (not used here)
   
-  # We sum the Dirichlet-multinomial log-likelihood for each row in the node.
-
+  # notes
+  # - we are using a uniform prior (alpha=1) for each category
+  # - we are ignoring weights (wt)
+  # - we are storing the colSums of y as the "label" for the node
+  # - we are using the negative log-likelihood as the deviance
   
-  
-  # AGGREGATE all using colsum, then compute log likilihood.
-  # fucntion needs to be spit out one number for each partition of the data.
   # integrated likelihood of the prior (out of denominator)
-  
-  # label does not mean anything 
   # mysplit = continuous = FALSE
-  # NOT CONTINOUS
   # NOT USING ANY WEIGHTS in eval/split
 
-  # CALCULATING GOODNESS
-  # 
+  # CALCULATING GOODNESS: 
   # RATIO SCALE: (V(counts_left) + V(counts_left)) / V(counts)
   # LOG SCALE: (V(counts_left) + V(counts_left)) - V(counts)
-  # COMPUTES VECTOR: 
-  # list(goodness= (left.wt*lmean^2 + right.wt*rmean^2)/sum(wt*y^2),
-  #      direction = ux[ord])
-  # 
+  
   # Write split function in terms of one X
-  # only return the   # list(goodness= (left.wt*lmean^2 + right.wt*rmean^2)/sum(wt*y^2),
-  #      direction = ux[ord])
-  # 
-  
-  
-  
-  
-  
-  #for (i in seq_len(nrow(y))) {
-  #  ll_i <- log.dirmult.likelihood.row(y[i,], alpha) # y=rowsums(y)
-  #  node.loglike <- node.loglike + ll_i
-  #}
-  
-  dev <- log.dirmult.likelihood.row(colSums(y), alpha)
-  
-  # no weights,
-  # no label, want jsut a number for this computing the ll of the colsums
-  # weight is implicit in the data
-  
-  # The node deviance is -2 * the total log-likelihood across these rows.
-  # dev <- -2 * node.loglike
-  
-  # If dev is infinite or NaN, we clamp it to 0 and warn
-  if (is.na(dev) || is.infinite(dev)) {
-    cat("WARNING: dev is NA/Inf => forcing 0.\n")
-    dev <- 0
-  }
-  
-  # The 'label' for the node is typically the proportion in each category
-  #total.counts <- colSums(y)
-  # denom <- sum(total.counts)
-  # if (denom <= 0) {
-  #   cat("WARNING: sum of counts=0 => using uniform label.\n")
-  #   label <- rep(1/ncol(y), ncol(y))  # fallback uniform if no counts
-  # } else {
-  #   label <- total.counts / denom
-  # }
-  # 
-  # Return the node label (estimate) and deviance
-  # list(label=label, deviance=dev, weight=sum(wt))
-  list(out)
+  counts <- colSums(y)
+  dev <- -log.dm.likelihood(counts, alpha=1) # counts is a vector!
+  # 'label' can be something to print for the node. We'll just store colSums  
+  return(list(label=counts, deviance=dev))
 }
 
 #----------------- 3) split() -----------------#
-##
-## IMPORTANT: rpart calls this as split(y, wt, x, parms, continuous), not (x,y,wt,...)
-##
-mysplit <- function(y, wt, x, parms, continuous) {
-  #
-  # rpart calls this function to evaluate all possible split points on 'x'.
-  # 'y', 'wt' are the rows/weights in the current node,
-  # 'parms' is alpha, 'continuous' indicates numeric vs factor.
-  #
+mysplit <- function(y, wt, x, parms, continuous=FALSE) {
+  # y: response matrix
+  # wt: weights (not used here)
+  # x: splitting variable
+  # parms: list containing alpha parameter
+  # continuous: whether x is continuous
   
-  # Attempt to infer predictor name from parent.frame (hacky; optional for debug):
-  varname <- NA
-  pf <- parent.frame()
-  if ("xn" %in% names(pf)) {
-    varname <- pf$xn
-  }
+  # Using the category counts, we compute the valid deviance improvement for splits.
   
-  cat("\n--- mysplit() called on predictor:", varname, "\n")
-  cat("continuous =", continuous, "\n")
-  cat("range(x) =", range(x), " #unique=", length(unique(x)), "\n")
-  
-  # If x is a factor, we skip. The code only handles continuous splits:
-  if (!continuous) {
-    cat("Factor => returning NULL.\n")
-    return(NULL)
-  }
-  
-  # Evaluate the deviance of the parent node
-  parent.eval <- myeval(y, wt, parms)
-  parent.dev  <- parent.eval$deviance
-  if (is.na(parent.dev) || is.infinite(parent.dev)) {
-    parent.dev <- 0
-  }
-  
-  # Sort x to check potential splits in ascending order
-  ord <- order(x)
-  x.sorted  <- x[ord]
-  y.sorted  <- y[ord, , drop=FALSE]
-  wt.sorted <- wt[ord]
-  
-  # Identify the distinct values of x
-  x.unique <- unique(x.sorted)
-  n.splits <- length(x.unique) - 1
-  
-  # If there's only one unique value, no splits are possible:
-  if (n.splits < 1) {
-    cat("No valid split for this predictor.\n")
-    return(NULL)
-  }
-  
-  goodness  <- numeric(n.splits)
-  direction <- numeric(n.splits)
-  
-  # For each possible split, cut at the midpoint between consecutive unique x values.
-  for (s in seq_len(n.splits)) {
-    cut.val <- (x.unique[s] + x.unique[s+1]) / 2
-    idx.left <- (x.sorted < cut.val)
+# 
+#   This function evaluates all possible splits on 'x'(predictor)
+#   and returns 'goodness' + 'direction' for each possible way of splitting 'x'.
+# 
+#   If x is binary or categorical with levels, rpart calls mysplit with continuous=FALSE
+#     and a single pass checking the categories. For each subset left vs right, we measure
+#     improvement in deviance.  #
+#   The key formula for improvement is:
+#     improvement = parent_dev - (left_dev + right_dev).
+#   Because rpart tries to *reduce* deviance
+
+  parent.dev <- -log.dm.likelihood(colSums(y), alpha=1)
+  # debug
+    cat("input: y",y, "\n")
+    cat("output: parent.dev", parent.dev, "\n")
     
-    # If split partitions all rows left or all right, no improvement:
-    if (!any(idx.left) || all(idx.left)) {
-      goodness[s]  <- 0
-      direction[s] <- 0
-      next
+  if(!continuous) {
+    # Suppose 'x' is a factor or a binary 0/1 variable
+    ux <- sort(unique(x)) # unique values of x
+    goodness <- numeric(length(ux) - 1)# store improvement in deviance
+    direction <-ux
+    
+    for(i in 1:(length(ux) - 1)) {
+      split.val <- ux[i]
+      left.idx <- x == split.val
+      left.counts <- colSums(y[left.idx, , drop=FALSE])
+      right.counts <- colSums(y[!left.idx, , drop=FALSE])
+      child.dev <- -log.dm.likelihood(left.counts) - log.dm.likelihood(right.counts)
+      goodness[i] <- parent.dev - child.dev
     }
     
-    # Evaluate the child nodes' deviances
-    left.dev  <- myeval(y.sorted[idx.left, , drop=FALSE],  wt.sorted[idx.left],  parms)$deviance
-    right.dev <- myeval(y.sorted[!idx.left, , drop=FALSE], wt.sorted[!idx.left], parms)$deviance
-    
-    # improvement = parent's dev - (left.dev + right.dev)
-    imp <- parent.dev - (left.dev + right.dev)
-    if (is.na(imp) || is.infinite(imp)) {
-      imp <- 0
-    }
-    
-    cat(sprintf(
-      "Split %2d cut=%.5g => parent.dev=%.3f, left.dev=%.3f, right.dev=%.3f, improvement=%.3f\n",
-      s, cut.val, parent.dev, left.dev, right.dev, imp
-    ))
-    
-    goodness[s]  <- imp # higher is better
-    # direction < 0 conventionally means "x < cut goes left"
-    direction[s] <- -1
+
+    # 'goodness' is a vector of length = #possible splits. We have only 1 here.
+    # 'direction' is a vector of length = #possible splits. Typically -1 means "x < cut" go left
+    #   For a categorical, you can store an integer code. We'll just do -1.
+    return(list(goodness = pmax(goodness, 0), direction = direction))
   }
-  
-  # Final clamp of any NA/Inf in goodness
-  idx.bad <- which(is.na(goodness) | is.infinite(goodness))
-  if (length(idx.bad) > 0) {
-    goodness[idx.bad] <- 0
-  }
-  
-  # Return vectors that tell rpart the "quality" of each split
-  list(goodness=goodness, direction=direction)
 }
 
-# Combine our custom functions into a list for rpart
-dm.method <- list(
-  init  = myinit, 
-  eval  = myeval, 
-  split = mysplit
+dm.method <- list(init=myinit, eval=myeval, split=mysplit)
+
+#-----------------------------------------------------------
+# D. Fit rpart Tree Using Our Custom DM Method
+#-----------------------------------------------------------
+X <- X.matrix
+Y <- Y.matrix
+
+# my.formula <- Y$actual_weight ~ X$sex + X$dmar + X$mrace15 + X$mager + X$meduc + X$precare5 + X$cig_0
+my.formula <- as.formula(
+  paste("cbind(", paste(response.cols, collapse = ", "), ") ~ .", sep = "")
 )
+print(my.formula)
 
-#-----------------------------------------------------------
-# D. Build the Single Tree using Custom DM Objective
-#-----------------------------------------------------------
-# 
-# We specify a formula with a 5-column response ~ some numeric predictors.
-# The "method=dm.method" tells rpart to use our custom deviance code.
-#
-# We have scaled 'n_in_node' to avoid huge gamma values, but we omit it here
-# for demonstration. You can re-add it once you confirm stability.
-
-my.formula <- cbind(
-  count_btw_0_0.25kg,
-  count_btw_0.25_0.5kg,
-  count_btw_0.5_0.75kg,
-  count_btw_0.75_1kg,
-  count_above_2.5kg
-) ~ var_y + sum_y + sum_y_squared + sum_y2_squared + sum_y3 + sum_y3_squared
-# If you want to re-add the scaled n_in_node, append + n_in_node
-
-# want to model 4 birthweight buns as DM response, excluding count_above_2.5kg, 
-# from the 4 bins, and use count_above_2.5kg as the predictor. 
-# i.e.) predict distribution among the 4 lower-birthweight categories based on count_above_2.5kg
-
-cat("\n--- Now fitting the rpart tree with our DM method ---\n")
+cat("\n--- Fitting the DM-based rpart tree ---\n")
 
 # We set various control parameters to reduce complexity:
 #   - usesurrogate=0, maxsurrogate=0 => no surrogate splits
@@ -318,54 +188,42 @@ cat("\n--- Now fitting the rpart tree with our DM method ---\n")
 #   - minsplit=5 => each node must have at least 5 obs
 #   - maxdepth=5 => limit tree depth to 5
 
-control = rpart.control(
-  minsplit=2, 
-  cp=0, 
-  maxdepth=10
+dm.control <- rpart.control(minsplit=2, cp=0, maxdepth=5, xval=0)
+dm.tree <- rpart(
+  formula = as.formula(paste("cbind(", paste(response.cols, collapse=", "), ") ~ .")),
+  data = combined.data,
+  method = dm.method,
+  control = dm.control
 )
 
-single.tree.dm <- rpart(
-  formula  = my.formula,
-  data     = results,
-  method   = dm.method,
-  model    = TRUE,
-  na.action= na.omit,
-  control  = control
-)
 #-----------------------------------------------------------
-#  E. Inspect / Plot the Resulting Tree
+# E. Save and Inspect Results
 #-----------------------------------------------------------
-cat("\n--- Finished building a single DM-based tree ---\n")
-print(single.tree.dm)
-printcp(single.tree.dm)
+save(dm.tree, file="dm_tree.RData")
+print(dm.tree)
+printcp(dm.tree)
 
-# Only plot if there's more than 1 node
-if (nrow(single.tree.dm$frame) > 1) {
-  plot(single.tree.dm, uniform=TRUE, compress=TRUE, margin=0.1)
-  text(single.tree.dm, use.n=TRUE, cex=0.8)
+# first base R plot
+if(nrow(dm.tree$frame) > 1) {
+  plot(dm.tree, uniform=TRUE, margin=0.1)
+  text(dm.tree, use.n=TRUE, cex=0.5)
 } else {
-  cat("No splits were found (just a root node). No tree to plot.\n")
+  cat("No splits found - check data or model\n")
 }
 
-#-----------------------------------------------------------
-#  F. Predictions
-#-----------------------------------------------------------  
-
-
-#-----------------------------------------------------------
-#  Notes
-#-----------------------------------------------------------  
-# default 'method' options for rpart include:
-# - 'anova'  => for continuous response, uses SSE-based deviance
-# - 'class'  => for classification, uses Gini/Entropy
-# - 'poisson'=> for count data, uses Poisson log-likelihood
-#
-# With our custom DM method, the deviance = -2 * (sum of DM log-likelihood).
-# Splitting tries to reduce that deviance, i.e., find partitions where the DM
-# likelihood is improved (higher log-likelihood => lower deviance).
-
-
-# y take in count vector into objective function
-# x is the 7 binary feature vector 
-# X matrix 128 x 7
-# y matrix 128 x k
+# rpart.plot
+rpart.plot(
+  dm.tree,
+  type = 4,
+  extra = 1,           # or 0, or 101—experiment
+  under = FALSE,        # put node “n=” under the box
+  faclen = 1,          # don’t truncate factor names
+  varlen = 1,          # don’t truncate variable names
+  cex = 0.5,           # shrink text
+  compress = TRUE,     # try to compact the tree horizontally
+  fallen.leaves = FALSE, # place leaves at the bottom
+  tweak = 0.75,         # adjust the spacing between nodes
+  clip.facs = FALSE,     # clip factor levels
+  shadow.col = "gray",  # color of shadow text
+  
+)
