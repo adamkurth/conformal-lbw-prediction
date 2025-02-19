@@ -5,8 +5,8 @@ library(rpart.plot)
 # A. Load Data & Construct Matrices
 #-----------------------------------------------------------
 year <- 2021
-data.pwd <- "/Users/adamkurth/Documents/RStudio/ms-thesis-kurth/birthweight_data/"
-load(sprintf("%s/birthweight_data_%d.RData", data.pwd, year))
+data.pwd <- sprintf("/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin/")
+load(sprintf("%s/birthweight_data_rebin_%d.RData", data.pwd, year))
 Y.counts <- as.matrix(counts.df)
 Y.df <- as.data.frame(Y.matrix)
 colnames(Y.df) <- paste0("Y",seq(1:ncol(Y.df))) # name columns Y1, Y2, ...
@@ -42,7 +42,7 @@ log.dm.likelihood <- function(counts, alpha=1) {
 
 dm.deviance <- function(counts.matrix, alpha=1){
   # Pass counts.matrix directly (already summed per category)
-      cat("input: counts.matrix", counts.matrix, "\n")
+      # cat("input: counts.matrix", counts.matrix, "\n")
   log.dm.likelihood(counts.matrix, alpha=alpha)
 }
 
@@ -137,9 +137,9 @@ mysplit <- function(y, wt, x, parms, continuous=FALSE) {
 #   Because rpart tries to *reduce* deviance
 
   parent.dev <- -log.dm.likelihood(colSums(y), alpha=1)
-  # debug
-    cat("input: y",y, "\n")
-    cat("output: parent.dev", parent.dev, "\n")
+    # debug
+    # cat("input: y",y, "\n")
+    # cat("output: parent.dev", parent.dev, "\n")
     
   if(!continuous) {
     # Suppose 'x' is a factor or a binary 0/1 variable
@@ -188,7 +188,7 @@ cat("\n--- Fitting the DM-based rpart tree ---\n")
 #   - minsplit=5 => each node must have at least 5 obs
 #   - maxdepth=5 => limit tree depth to 5
 
-dm.control <- rpart.control(minsplit=2, cp=0, maxdepth=5, xval=0)
+dm.control <- rpart.control(minsplit=0, cp=0, maxdepth=5, xval=0)
 dm.tree <- rpart(
   formula = as.formula(paste("cbind(", paste(response.cols, collapse=", "), ") ~ .")),
   data = combined.data,
@@ -199,7 +199,8 @@ dm.tree <- rpart(
 #-----------------------------------------------------------
 # E. Save and Inspect Results
 #-----------------------------------------------------------
-save(dm.tree, file="dm_tree.RData")
+
+save(dm.tree, file=sprintf("%s/dm_tree_rebin_%d.RData", data.pwd, year))
 print(dm.tree)
 printcp(dm.tree)
 
@@ -214,16 +215,33 @@ if(nrow(dm.tree$frame) > 1) {
 # rpart.plot
 rpart.plot(
   dm.tree,
-  type = 4,
-  extra = 1,           # or 0, or 101—experiment
-  under = FALSE,        # put node “n=” under the box
-  faclen = 1,          # don’t truncate factor names
-  varlen = 1,          # don’t truncate variable names
-  cex = 0.5,           # shrink text
-  compress = TRUE,     # try to compact the tree horizontally
-  fallen.leaves = FALSE, # place leaves at the bottom
-  tweak = 0.75,         # adjust the spacing between nodes
-  clip.facs = FALSE,     # clip factor levels
-  shadow.col = "gray",  # color of shadow text
-  
+  # extra = 1,            # or 0, or 101—experiment
+  # under = FALSE,        # put node “n=” under the box
+  # faclen = 1,           # don’t truncate factor names
+  # varlen = 1,           # don’t truncate variable names
+  # cex = 1.0,           # shrink text
+  # compress = TRUE,      # try to compact the tree horizontally
+  # fallen.leaves = FALSE,# place leaves at the bottom
+  # tweak = 0.55,         # adjust the spacing between nodes
+  # clip.facs = FALSE,     # clip factor levels
+  # # shadow.col = "gray",  # color of shadow text
+  # nn = FALSE,            # display node numbers
 )
+#-----------------------------------------------------------
+
+
+# before rebin: 
+# make bar charts /sum(each) throw into pdf
+# use x_1, ... x_7 predictors to decode the classes using the legend.
+
+# extract out counts from each bin/node.
+# re geneate the counts data for 0.1 kg to create more bins
+# write up progress 
+
+# Writing: 
+# Page about dataset: US natality data
+# Dirichlet Multinomial Criterion 
+
+# More advanced version using statistical uncertainty
+
+
