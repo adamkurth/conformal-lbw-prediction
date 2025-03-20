@@ -1,49 +1,66 @@
 rm(list=ls())
 library(rpart)
 library(rpart.plot)
+
 #-----------------------------------------------------------
 # A. Load Data & Construct Matrices
 #-----------------------------------------------------------
 year <- 2021
+
+# load WITH 2.5kg 
 data.pwd <- sprintf("/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin/")
 load(sprintf("%s/birthweight_data_rebin_%d.RData", data.pwd, year))
-Y.counts <- as.matrix(counts.df)
-Y.df <- as.data.frame(Y.matrix)
-colnames(Y.df) <- paste0("Y",seq(1:ncol(Y.df))) # name columns Y1, Y2, ...
-combined.data <- data.frame(X.matrix, Y.df)
-response.cols <- colnames(Y.df)
-cat("Dimensions of X.matrix:", dim(X.matrix), "\n")
-cat("Dimensions of Y.matrix:", dim(Y.matrix), "\n")
 
-# Y = birthweight (actual, log, count)
-# X = 7 binary features (from original large.csv of binary values)
+# load WITHOUT 2.5kg
+# data.pwd <- sprintf("/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin_without_2.5kg/")
+# load(sprintf("%s/birthweight_data_rebin_%d.RData", data.pwd, year))
+
+# load('birthweight_data_2021.Rdata')
+
+Y.df <- counts.df
+response.cols <- colnames(Y.df)
+
+alphavec <- 1*rep(1/ncol(Y.df),ncol(Y.df)) # uniform
+# alphavec <- 1*colSums(Y.df)/sum(Y.df) # informed
 
 #-----------------------------------------------------------
 # B. Simplified Dirichlet-Multinomial Functions
 #-----------------------------------------------------------
-# 'counts' is a numeric vector of counts for each category at a node. 
-# 'alpha'  is a numeric vector of Dirichlet parameters, typically alpha_j > 0.
-log.dm.likelihood <- function(counts, alpha=1) {
-  # counts: vector of counts for each category 
+log.dm.likelihood <- function(counts, alpha = 1) {
+ # cat("** counts: ", counts, "\n")
+  # 'counts': an integer vector (n_1, ..., n_K)
+  # 'alpha':  scalar Dirichlet hyperparameter (assuming alpha_k = alpha for all k)
+  #
+  # Returns the log-likelihood of the Dirichlet-Multinomial model:
+  #   log p(x | alpha) = log Gamma(alpha_0) - log Gamma(N+alpha_0)
+  #                     + sum_k [ log Gamma(n_k + alpha) - log Gamma(alpha) ]
+  # where alpha_0 = K * alpha,  N = sum(counts), and K = length(counts).
+  
   N <- sum(counts)
-  k <- length(counts)
+  K <- length(counts)
+  #alpha <- alpha*rep(1,K)
   
-  # term1 = ln Γ(Σ alpha_j) - ln Γ(N + Σ alpha_j)
-  term1 <- lgamma(k*alpha) - lgamma(N + k*alpha)
-  
-  # term2 = sum over j of [ ln Γ(count_j + alpha_j) - ln Γ(alpha_j) ]
-  term2 <- sum(lgamma(counts + alpha) - lgamma(alpha))
-  
-  ll <- term1 + term2
-  
-  if(is.na(ll) || is.infinite(ll)) return(0)  # Handle edge cases
-  ll
-}
+  # cat("N: ", N, "\n")
+  # cat("K: ", K, "\n")
 
-dm.deviance <- function(counts.matrix, alpha=1){
-  # Pass counts.matrix directly (already summed per category)
-      # cat("input: counts.matrix", counts.matrix, "\n")
-  log.dm.likelihood(counts.matrix, alpha=alpha)
+  # sum of alpha over all categories
+  alpha_0 <- sum(alpha)
+
+  # Term 1: log Gamma(alpha_0) + log Gamma(N+1) - log Gamma(N + alpha_0)
+  term1 <- lgamma(alpha_0) + 0*lgamma(N + 1) - lgamma(N + alpha_0)
+  
+  # Term 2: sum over k of [log Gamma(n_k + alpha) - log Gamma(alpha) - log Gamma(n_k + 1)]
+  term2 <- sum(lgamma(counts + alpha) - lgamma(alpha) - 0*lgamma(counts + 1))
+  
+  # Total log-likelihood
+  ll <- term1 + term2
+
+  # if numeric issues occur
+  if (is.na(ll) || is.infinite(ll)) {
+    ll <- -Inf
+  }
+
+  return(ll)
 }
 
 #-----------------------------------------------------------
@@ -65,12 +82,13 @@ myinit <- function(y, offset, parms=NULL, wt=NULL) {
   # y: matrix of response counts 
   # offset: not used
   # parms: list containing alpha parameter
-  # 
+  # wt: not used
   # cat("** myinit() called. Y dimension:", dim(y), "\n")
 
   list(
+    method="dm",
     y = y,
-    parms = list(alpha =1),
+    parms = list(alpha=1),
     numresp = ncol(y),
     numy = ncol(y),
     summary = function(yval, dev, wt, ylevel, digits) {
@@ -80,9 +98,7 @@ myinit <- function(y, offset, parms=NULL, wt=NULL) {
       # yval is the colsum from myeval(); a vector of category counts.
       # keep labels short.
       total.counts <- sum(yval)
-      # dev.str <- format(dev, digits=2)
-      # lbl <- paste0("Total=", total.counts, ", Dev=", dev.str)
-      lbl <- paste0(format(total.counts, digits=4))
+      lbl <- paste0(format(which.max(total.counts), digits=4))
       if (use.n) lbl <- paste(lbl, "\nn", n)
       return(lbl)
     }
@@ -93,90 +109,96 @@ myinit <- function(y, offset, parms=NULL, wt=NULL) {
 myeval <- function(y, wt=NULL, parms=1) {
   # y: response matrix subset for current node
   # wt: weights (not used here)
-  
-  # notes
-  # - we are using a uniform prior (alpha=1) for each category
-  # - we are ignoring weights (wt)
-  # - we are storing the colSums of y as the "label" for the node
-  # - we are using the negative log-likelihood as the deviance
-  
-  # integrated likelihood of the prior (out of denominator)
-  # mysplit = continuous = FALSE
-  # NOT USING ANY WEIGHTS in eval/split
-
-  # CALCULATING GOODNESS: 
-  # RATIO SCALE: (V(counts_left) + V(counts_left)) / V(counts)
-  # LOG SCALE: (V(counts_left) + V(counts_left)) - V(counts)
-  
-  # Write split function in terms of one X
-  counts <- colSums(y)
-  dev <- -log.dm.likelihood(counts, alpha=1) # counts is a vector!
+  if (nrow(y)==1) {counts = y}else{
+  counts <- colSums(y)}
+  # dev <- dm.deviance(counts,alpha=1) # return -log.dm.likelihood
+  dev <- -log.dm.likelihood(counts, alpha=alphavec) # counts is a vector!
   # 'label' can be something to print for the node. We'll just store colSums  
   return(list(label=counts, deviance=dev))
 }
 
-#----------------- 3) split() -----------------#
-mysplit <- function(y, wt, x, parms, continuous=FALSE) {
-  # y: response matrix
-  # wt: weights (not used here)
-  # x: splitting variable
-  # parms: list containing alpha parameter
-  # continuous: whether x is continuous
+mysplit <- function(y, wt, x, parms, continuous = FALSE) {
   
-  # Using the category counts, we compute the valid deviance improvement for splits.
+  if (nrow(y)==1) {counts = y}else{
+    counts <- colSums(y)}
   
-# 
-#   This function evaluates all possible splits on 'x'(predictor)
-#   and returns 'goodness' + 'direction' for each possible way of splitting 'x'.
-# 
-#   If x is binary or categorical with levels, rpart calls mysplit with continuous=FALSE
-#     and a single pass checking the categories. For each subset left vs right, we measure
-#     improvement in deviance.  #
-#   The key formula for improvement is:
-#     improvement = parent_dev - (left_dev + right_dev).
-#   Because rpart tries to *reduce* deviance
+  
+  parent.dev <- -log.dm.likelihood(counts, alpha=alphavec)
+  
+  # Suppose 'x' is a factor or a binary 0/1 variable
+  ux <- sort(unique(x)) # unique values of x
+  goodness <- numeric(length(ux) - 1)# store improvement in deviance
+  direction <- ux
+  
+  # We only handle the case !continuous, i.e. factor or ordered factor
+ 
+    # levs <- levels(x)         # <-- name them "levs"
+    # nlevs <- length(levs)
+    # if (nlevs < 2) return(NULL)  # can't split with <2 levels
+    # 
+    # 
+    # i <- 1
+    # 
+    #   left.idx  <- (x == levs[i])
+    #   right.idx <- !left.idx
+    #   
+    #   if (length(left.idx)>1){
+    #   left.counts  <- colSums(y[left.idx,  , drop=FALSE])}else{left.counts <- y[left.idx, , drop = FALSE]}
+    #   
+    #   
+    #   if (length(right.idx)>1){
+    #     right.counts  <- colSums(y[right.idx,  , drop=FALSE])}else{right.counts <- y[right.idx, , drop = FALSE]}
+    #   
+    #   child.dev <- -log.dm.likelihood(left.counts) - log.dm.likelihood(right.counts)
+    #   improvement <- parent.dev - child.dev
+    #   
+    #   goodness  <- max(improvement,0)
+    #   direction <- 1  # code "2" is typical for factor splits
+    # 
+    # 
+    # 
+    # return(list(
+    #   goodness  = goodness,
+    #   direction = direction
+    # ))
+  
+  
+      for(i in 1:(length(ux) - 1)) {
+        split.val <- ux[i]
+        left.idx <- x == split.val
+       right.idx <- !left.idx
+        
+        if (sum(left.idx)>1){
+             left.counts  <- colSums(y[left.idx,  , drop=FALSE])}else{left.counts <- y[left.idx, , drop = FALSE]}
+             
+             
+             if (sum(right.idx)>1){
+               right.counts  <- colSums(y[right.idx,  , drop=FALSE])}else{right.counts <- y[right.idx, , drop = FALSE]}
+             
+        
+        
+        child.dev <- -log.dm.likelihood(left.counts,alpha=alphavec) - log.dm.likelihood(right.counts,alpha=alphavec)
 
-  parent.dev <- -log.dm.likelihood(colSums(y), alpha=1)
-    # debug
-    # cat("input: y",y, "\n")
-    # cat("output: parent.dev", parent.dev, "\n")
-    
-  if(!continuous) {
-    # Suppose 'x' is a factor or a binary 0/1 variable
-    ux <- sort(unique(x)) # unique values of x
-    goodness <- numeric(length(ux) - 1)# store improvement in deviance
-    direction <-ux
-    
-    for(i in 1:(length(ux) - 1)) {
-      split.val <- ux[i]
-      left.idx <- x == split.val
-      left.counts <- colSums(y[left.idx, , drop=FALSE])
-      right.counts <- colSums(y[!left.idx, , drop=FALSE])
-      child.dev <- -log.dm.likelihood(left.counts) - log.dm.likelihood(right.counts)
-      goodness[i] <- parent.dev - child.dev
-    }
-    
+        goodness[i] <- parent.dev - child.dev
+      }
+      
+      
+      # 'goodness' is a vector of length = #possible splits. We have only 1 here.
+      # 'direction' is a vector of length = #possible splits. Typically -1 means "x < cut" go left
+      #   For a categorical, you can store an integer code. We'll just do -1.
+      return(list(goodness = pmax(goodness, 0), direction = direction))
+      
+      
+      
 
-    # 'goodness' is a vector of length = #possible splits. We have only 1 here.
-    # 'direction' is a vector of length = #possible splits. Typically -1 means "x < cut" go left
-    #   For a categorical, you can store an integer code. We'll just do -1.
-    return(list(goodness = pmax(goodness, 0), direction = direction))
-  }
 }
 
-dm.method <- list(init=myinit, eval=myeval, split=mysplit)
+dm.method <- list(init=myinit, eval=myeval, split=mysplit, method="dm")
 
 #-----------------------------------------------------------
 # D. Fit rpart Tree Using Our Custom DM Method
 #-----------------------------------------------------------
-X <- X.matrix
-Y <- Y.matrix
 
-# my.formula <- Y$actual_weight ~ X$sex + X$dmar + X$mrace15 + X$mager + X$meduc + X$precare5 + X$cig_0
-my.formula <- as.formula(
-  paste("cbind(", paste(response.cols, collapse = ", "), ") ~ .", sep = "")
-)
-print(my.formula)
 
 cat("\n--- Fitting the DM-based rpart tree ---\n")
 
@@ -188,10 +210,9 @@ cat("\n--- Fitting the DM-based rpart tree ---\n")
 #   - minsplit=5 => each node must have at least 5 obs
 #   - maxdepth=5 => limit tree depth to 5
 
-dm.control <- rpart.control(minsplit=0, cp=0, maxdepth=5, xval=0)
-dm.tree <- rpart(
-  formula = as.formula(paste("cbind(", paste(response.cols, collapse=", "), ") ~ .")),
-  data = combined.data,
+dm.control <- rpart.control(minsplit=2, cp=0, maxdepth=8, xval=0, usesurrogate = 0)
+dm.tree <- rpart(Y.df~.,
+  data = data.frame(X.matrix),
   method = dm.method,
   control = dm.control
 )
@@ -200,48 +221,33 @@ dm.tree <- rpart(
 # E. Save and Inspect Results
 #-----------------------------------------------------------
 
-save(dm.tree, file=sprintf("%s/dm_tree_rebin_%d.RData", data.pwd, year))
+#save(dm.tree, file=sprintf("%s/dm_tree_rebin_%d.RData", data.pwd, year))
 print(dm.tree)
 printcp(dm.tree)
 
-# first base R plot
-if(nrow(dm.tree$frame) > 1) {
-  plot(dm.tree, uniform=TRUE, margin=0.1)
-  text(dm.tree, use.n=TRUE, cex=0.5)
-} else {
-  cat("No splits found - check data or model\n")
-}
+# # first base R plot
+# if(nrow(dm.tree$frame) > 1) {
+#   plot(dm.tree, uniform=TRUE, margin=0.1)
+#   text(dm.tree, use.n=TRUE, cex=0.5)
+# } else {
+#   cat("No splits found - check data or model\n")
+# }
 
 # rpart.plot
-rpart.plot(
-  dm.tree,
-  # extra = 1,            # or 0, or 101—experiment
-  # under = FALSE,        # put node “n=” under the box
-  # faclen = 1,           # don’t truncate factor names
-  # varlen = 1,           # don’t truncate variable names
-  # cex = 1.0,           # shrink text
-  # compress = TRUE,      # try to compact the tree horizontally
-  # fallen.leaves = FALSE,# place leaves at the bottom
-  # tweak = 0.55,         # adjust the spacing between nodes
-  # clip.facs = FALSE,     # clip factor levels
-  # # shadow.col = "gray",  # color of shadow text
-  # nn = FALSE,            # display node numbers
-)
+plot(dm.tree)
 #-----------------------------------------------------------
 
+# use the alphavec parameter to explain approaches and results of sensitivity of multi. coefficient adjustment
+# see which rebinning techniques work the best.
+# use marginal quantiles to split/rebin data 10%, 20% etc. until 2.5kg. 
 
-# before rebin: 
-# make bar charts /sum(each) throw into pdf
-# use x_1, ... x_7 predictors to decode the classes using the legend.
+# explain the different splitting results
 
-# extract out counts from each bin/node.
-# re geneate the counts data for 0.1 kg to create more bins
-# write up progress 
+# dirichlet uniform: alphavec <- 1*rep(1/ncol(Y.df),ncol(Y.df))
+# vs. 
+# marginal: alphavec <- 1*colSums(Y.df)/sum(Y.df)
 
-# Writing: 
-# Page about dataset: US natality data
-# Dirichlet Multinomial Criterion 
+# dont need to explain: 
+# quantile idea instead of incremental splits. split into 10 or 20 etc. 
 
-# More advanced version using statistical uncertainty
-
-
+# bootstrap, sampling with replacement. drawing data from multinomial model from probabilities of that cell. 
