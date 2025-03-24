@@ -11,6 +11,9 @@ year <- 2021
 data.pwd <- sprintf("/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin/")
 load(sprintf("%s/birthweight_data_rebin_%d.RData", data.pwd, year))
 
+load(sprintf("%s/informed_prior_%d.RData", data.pwd, 2020))
+print(alphavec)
+
 # load WITHOUT 2.5kg
 # data.pwd <- sprintf("/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin_without_2.5kg/")
 # load(sprintf("%s/birthweight_data_rebin_%d.RData", data.pwd, year))
@@ -20,7 +23,11 @@ load(sprintf("%s/birthweight_data_rebin_%d.RData", data.pwd, year))
 Y.df <- counts.df
 response.cols <- colnames(Y.df)
 
-alphavec <- 1*rep(1/ncol(Y.df),ncol(Y.df)) # uniform
+# prior
+# informed prior based on 2020 data
+# alphavec <- load(sprintf("%s/informed_prior_%d.RData", data.pwd, 2020))
+
+# alphavec <- 1*rep(1/ncol(Y.df),ncol(Y.df)) # uniform
 # alphavec <- 1*colSums(Y.df)/sum(Y.df) # informed
 
 #-----------------------------------------------------------
@@ -198,8 +205,6 @@ dm.method <- list(init=myinit, eval=myeval, split=mysplit, method="dm")
 #-----------------------------------------------------------
 # D. Fit rpart Tree Using Our Custom DM Method
 #-----------------------------------------------------------
-
-
 cat("\n--- Fitting the DM-based rpart tree ---\n")
 
 # We set various control parameters to reduce complexity:
@@ -235,6 +240,57 @@ printcp(dm.tree)
 
 # rpart.plot
 plot(dm.tree)
+
+#-----------------------------------------------------------
+# F. Bootstrap Sampling 
+#-----------------------------------------------------------
+
+# Number of bootstrap samples
+B <- 100
+n.rows <- nrow(X.matrix) # 128 
+# store single numeric per row (e.g. total LBW pred prob)
+Yhat <- matrix(0, nrow = n.rows, ncol = B)
+# indices of LBW categories (1:10, if 11th is above_2.5kg)
+lbw.cols <- 1:10
+
+# Loop over the bootstrap samples
+for (b in 1:B) {
+  # sample with replacement from row indices
+  idx <- sample(seq_len(n.rows), replace = TRUE)
+  
+  # Fit the model to the bootstrap sample
+  # - subset Y.df for response
+  # - subset X.matrix for predictors 
+  dm.tree.b <- rpart(
+    Y.df[idx, ] ~ .,
+    data = data.frame(X.matrix[idx, , drop =FALSE]),
+    method = dm.method,
+    control = dm.control
+  )
+  
+  # make predictions on full dataset
+  # type="matrix" likely returns an N x K matrix of predicted category probabilities
+  preds.mat <- predict(dm.tree.b, newdata=data.frame(X.matrix), type="matrix")
+  
+  # subset columns for LBW categories, then compute rowsums for Nx1
+  # convert NxK matrix to N x 1 matrix
+  lbw.prob <- rowSums(preds.mat[, lbw.cols])
+  
+  # store
+  Yhat[, b] <- lbw.prob
+}
+
+# Compute the 95% confidence intervals across B bootstrap samples
+alpha.sig <- 0.05
+lower <- apply(Yhat, 1, function(x) quantile(x, alpha.sig / 2))
+upper <- apply(Yhat, 1, function(x) quantile(x, 1 - alpha.sig / 2))
+
+# Save the results
+save(Yhat, lower, upper, file = sprintf("%s/bootstrap_results_%d.RData", data.pwd, year))
+
+
+
+
 #-----------------------------------------------------------
 
 # use the alphavec parameter to explain approaches and results of sensitivity of multi. coefficient adjustment
@@ -251,3 +307,27 @@ plot(dm.tree)
 # quantile idea instead of incremental splits. split into 10 or 20 etc. 
 
 # bootstrap, sampling with replacement. drawing data from multinomial model from probabilities of that cell. 
+
+
+
+# K <- length(alphavec)
+# barplot(alphavec,
+#         names.arg = paste("cat", 1:K),
+#         col = "skyblue",
+#         border = "blue",
+#         main = "Informed Dirichlet Prior (alphavec)",
+#         xlab = "Birth Weight Categories",
+#         ylab = "Prior Probability",
+#         ylim = c(0, max(alphavec) * 1.2))
+# 
+# plots.pwd <- "/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/plots"
+# pdf(sprintf("%s/alphavec_plot_%d.pdf", plots.pwd, 2020), width = 8, height = 6)
+# barplot(alphavec,
+#         names.arg = paste("Cat", 1:length(alphavec)),
+#         col = "skyblue",
+#         border = "blue",
+#         main = "Informed Dirichlet Prior (alphavec)",
+#         xlab = "Birth Weight Categories",
+#         ylab = "Prior Probability",
+#         ylim = c(0, max(alphavec) * 1.2))
+# dev.off()

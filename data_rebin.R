@@ -1,12 +1,21 @@
 rm(list=ls())
 library(rnn)
 year <- 2021
+
+# grab 2020/2021 data path
 data.pwd <- "/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data"
-file.path <- sprintf("%s/natality%dus-original.csv", data.pwd, year)
 
 # rebin (1) vs. without with 2.5kg (2)
-# data.rebin.pwd <- "/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin/"
-data.rebin.pwd <- "/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin_without_2.5kg/"
+data.rebin.pwd <- "/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin/"
+# data.rebin.pwd <- "/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin_without_2.5kg/"
+
+# run quantile.R first to obtain previous year's prior cutpoints
+prior.year <- 2020
+load(sprintf("%s/quantile_cutpoints_%d.RData", data.rebin.pwd, prior.year))
+prior.cutpoints <- cut_points
+
+# 2021 data file
+file.path <- sprintf("%s/natality%dus-original.csv", data.pwd, year)
 
 natalitydata <- read.csv(file.path)
 names(natalitydata)
@@ -81,16 +90,18 @@ final.data$count[is.na(final.data$count)] <- 0
 # Create final matrices
 X.matrix <- final.data[, feature.names]
 Y.matrix <- data.frame(
-  # actual_weight = final.data$x.y, 
-  # log_weight = final.data$x.x,
   count = final.data$count
-  )
+)
 
 # ---- ONLY CHANGE: use 10% quantiles instead of 100g increments ----
 # (A) Restrict to birthweights <= 2500g, then compute 10% quantiles
-dat_lte2.5 <- dat$dbwt[dat$dbwt <= 2500]
-probs <- seq(0, 1, by = 0.1)
-cut_points <- quantile(dat_lte2.5, probs = probs)  
+## use prior.cutpoints
+cat("Prior cutpoints: ", prior.cutpoints, "\n")
+
+# dat_lte2.5 <- dat$dbwt[dat$dbwt <= 2500]
+# probs <- seq(0, 1, by = 0.1)
+# cut_points <- quantile(dat_lte2.5, probs = probs)
+
 # (B) Create counts for each quantile-based bin from 0 up to 2.5 kg
 counts <- list()
 for(i in 1:(length(cut_points) - 1)) {
@@ -104,8 +115,8 @@ for(i in 1:(length(cut_points) - 1)) {
     formatC(probs[i],   format="f", digits=2), "_",
     formatC(probs[i+1], format="f", digits=2),
     "_quantile_",
-    round(cut_points[i]   / 1000, 2), "_",
-    round(cut_points[i+1] / 1000, 2),
+    round(prior.cutpoints[i]   / 1000, 2), "_",
+    round(prior.cutpoints[i+1] / 1000, 2),
     "kg"
   )
   counts[[name]] <- counts_table
@@ -116,13 +127,10 @@ count_above_2.5kg <- tapply(dat$dbwt > 2500, xnode, sum)
 
 
 # toggle this to include or exclude > 2.5kg
-# counts[["counts_above_2.5kg"]] <- count_above_2.5kg
-
-
+counts[["counts_above_2.5kg"]] <- count_above_2.5kg
 
 # Combine all counts
 counts.df <- do.call(cbind, counts)
-
 
 # Save data
 write.csv(final.data, sprintf("%s/final_data_%d.csv", data.rebin.pwd, year), row.names = FALSE)
@@ -135,5 +143,6 @@ save(
   Y.matrix, 
   counts.df, 
   final.data, 
+  prior.cutpoints,
   file = sprintf("%s/birthweight_data_rebin_%d.RData", data.rebin.pwd, year)
 )
