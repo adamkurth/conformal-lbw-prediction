@@ -9,10 +9,12 @@ year <- 2021
 
 # load WITH 2.5kg 
 data.pwd <- sprintf("/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin/")
+# data.pwd <- sprintf("/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin_without_2.5kg/")
 load(sprintf("%s/birthweight_data_rebin_%d.RData", data.pwd, year))
 
 load(sprintf("%s/informed_prior_%d.RData", data.pwd, 2020))
 print(alphavec)
+length(alphavec)
 
 # load WITHOUT 2.5kg
 # data.pwd <- sprintf("/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin_without_2.5kg/")
@@ -289,8 +291,6 @@ upper <- apply(Yhat, 1, function(x) quantile(x, 1 - alpha.sig / 2))
 save(Yhat, lower, upper, file = sprintf("%s/bootstrap_results_%d.RData", data.pwd, year))
 
 
-
-
 #-----------------------------------------------------------
 
 # use the alphavec parameter to explain approaches and results of sensitivity of multi. coefficient adjustment
@@ -321,7 +321,7 @@ save(Yhat, lower, upper, file = sprintf("%s/bootstrap_results_%d.RData", data.pw
 #         ylim = c(0, max(alphavec) * 1.2))
 # 
 # plots.pwd <- "/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/plots"
-# pdf(sprintf("%s/alphavec_plot_%d.pdf", plots.pwd, 2020), width = 8, height = 6)
+# pdf(sprintf("%s/alphavec_plot_%d.pdf", plots.pwd, 2020), width = 10, height = 8)
 # barplot(alphavec,
 #         names.arg = paste("Cat", 1:length(alphavec)),
 #         col = "skyblue",
