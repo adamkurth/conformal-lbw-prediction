@@ -11,7 +11,7 @@ data.rebin.pwd <- "/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/b
 
 # run quantile.R first to obtain previous year's prior cutpoints
 prior.year <- 2020
-load(sprintf("%s/quantile_cutpoints_%d.RData", data.rebin.pwd, prior.year))
+load(sprintf("%s/quantile_cutpoints_%d.RData", "/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin/", prior.year))
 prior.cutpoints <- cut_points
 
 # 2021 data file
@@ -99,7 +99,7 @@ Y.matrix <- data.frame(
 cat("Prior cutpoints: ", prior.cutpoints, "\n")
 
 # dat_lte2.5 <- dat$dbwt[dat$dbwt <= 2500]
-# probs <- seq(0, 1, by = 0.1)
+probs <- seq(0, 1, by = 0.1)
 # cut_points <- quantile(dat_lte2.5, probs = probs)
 
 # (B) Create counts for each quantile-based bin from 0 up to 2.5 kg
@@ -124,7 +124,6 @@ for(i in 1:(length(cut_points) - 1)) {
 
 # (C) Create final interval for > 2.5 kg
 count_above_2.5kg <- tapply(dat$dbwt > 2500, xnode, sum)
-
 
 # toggle this to include or exclude > 2.5kg
 counts[["counts_above_2.5kg"]] <- count_above_2.5kg
