@@ -12,7 +12,7 @@ data.rebin.pwd <- "/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/b
 # run quantile.R first to obtain previous year's prior cutpoints
 prior.year <- 2020
 load(sprintf("%s/quantile_cutpoints_%d.RData", "/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data/rebin/", prior.year))
-prior.cutpoints <- cut_points
+prior.cutpoints <- cut.points
 
 # 2021 data file
 file.path <- sprintf("%s/natality%dus-original.csv", data.pwd, year)
