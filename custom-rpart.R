@@ -1,6 +1,7 @@
 rm(list=ls())
 library(rpart)
-# library(rpart.plot)
+library(ggplot2)
+library(xtable)
 
 #-----------------------------------------------------------
 # A. Load Data & Construct Matrices
@@ -8,7 +9,7 @@ library(rpart)
 year <- 2021
 
 # Determine type based on data path
-use_without_2_5kg <- FALSE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
+use_without_2_5kg <- TRUE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
 type <- ifelse(use_without_2_5kg, 2, 1)
 
 # Set appropriate data path based on type
@@ -33,12 +34,8 @@ if(type == 1) {
 
 print(alphavec)
 length(alphavec)
+Y.df <- counts.df; response.cols <- colnames(Y.df)
 
-Y.df <- counts.df
-response.cols <- colnames(Y.df)
-
-# prior
-# informed prior based on 2020 data
 # alphavec <- load(sprintf("%s/informed_prior_%d.RData", data.pwd, 2020))
 
 # alphavec <- 1*rep(1/ncol(Y.df),ncol(Y.df)) # uniform
@@ -87,17 +84,6 @@ log.dm.likelihood <- function(counts, alpha = 1) {
 #-----------------------------------------------------------
 # C. Define Custom rpart Method (DM with log-likelihood deviance)
 #-----------------------------------------------------------
-# rpart requires a list with the following named functions:
-#    init, eval, split
-#
-# We'll define alpha=1 for each category (simple uniform prior).
-# The 'eval' function must return a $deviance scalar.
-# Here, deviance = - log_dm_likelihood( colSums(Y) ) -- i.e. negative LL.
-# 
-#    - We ignore weights (wt)
-#    - We store in "label" something descriptive (i.e. colsum)
-#    - We use the "summary" function to print the deviance in a readable way.
-
 #----------------- 1) init() ------------------#
 myinit <- function(y, offset, parms=NULL, wt=NULL) {
   # y: matrix of response counts 
@@ -216,212 +202,132 @@ printcp(dm.tree)
 plot(dm.tree, main="DM Tree",uniform=TRUE)
 text(dm.tree,use.n=TRUE,cex=1,font=3)
 
+path.rpart(dm.tree, node = 2)     # left child  => mrace15 = 0
+path.rpart(dm.tree, node = 3)     # right child => mrace15 = 1
+
 #-----------------------------------------------------------
 # F. Multinomial Parametric Bootstrap Sampling
 #-----------------------------------------------------------
-# - Calculate Dirichlet-smoothed multinomial probabilities for each cell/row
-# - For each of B iterations:
-#   (1) Generate new counts (parametric bootstrap) from these probabilities
-#   (2) Sample rows in proportion to row totals for fitting the model (stratified bootstrap)
-#   (3) Collect predictions, including OOB
 
 B <- 10000  # Number of bootstrap samples
-n.rows <- nrow(X.matrix)
+n.rows <- nrow(counts.df)
 lbw.cols <- 1:10  # Indices of LBW categories (1:10, if 11th is above_2.5kg)
-alpha.sig <- 0.05 # Significance level for confidence intervals
 
-# Initialize matrices for predictions
-Yhat.oob <- matrix(NA, nrow = n.rows, ncol = B)  # Out-of-bag predictions
-Yhat.all <- matrix(0,  nrow = n.rows, ncol = B)  # Full-dataset predictions
+
+# Dirichlet-smoothed cell probabilities
+multinomial.probs <- matrix(0, nrow = n.rows, ncol = ncol(Y.df))
+
+for(i in 1:n.rows) {
+  
+  # Get counts for this cell/row
+  cell.counts <- as.numeric(Y.df[i,])
+  
+  # Calculate probability with Dirichlet smoothing
+  cell.probs <- (cell.counts + alphavec) / (sum(cell.counts) + sum(alphavec))
+  
+  multinomial.probs[i, ] <- cell.probs
+}
+
+
+# row-probability vector for total-count bootstrap
+row.probs <- rowMeans(counts.df) # positive weights
+row.probs <- row.probs / sum(row.probs)  # Normalize to sum to 1
+
+barplot(row.probs, main="Row Probabilities for Bootstrap Sampling", 
+        xlab="Row Index", ylab="Probability")
+
+
 
 # initialize list for tree structure information
 tree.structure <- list()
 top.vars.used <- character(B)
 n.vars.used <- integer(B)
 
-cat("Starting multinomial parametric + category-proportional bootstrap with", B, "samples...\n")
-pb <- txtProgressBar(min = 0, max = B, style = 3)
+cat("Multinomial parametric bootstrap     (no row/OOB resampling)\n")
+pb <- txtProgressBar(0, B, style = 3)
 
 #-----------------------------------------------------------
-# 1) Dirichlet-smoothed Multinomial Probabilities per Row
-#-----------------------------------------------------------
-# For each row (unique predictor combination):
-# - Get the observed counts across categories
-# - Apply Dirichlet smoothing using the alphavec prior
-# - Convert to probabilities for multinomial sampling
-multinomial.probs <- matrix(0, nrow = n.rows, ncol = ncol(Y.df))
-
-for(i in 1:n.rows) {
-  
-    # Get counts for this cell/row
-    cell.counts <- as.numeric(Y.df[i,])
-    
-    # Calculate probability with Dirichlet smoothing
-    # (counts + alpha) / (sum(counts) + sum(alpha))
-    cell.probs <- (cell.counts + alphavec) / (sum(cell.counts) + sum(alphavec))
-    
-    multinomial.probs[i, ] <- cell.probs
-}
-
-#-----------------------------------------------------------
-# 2) Prepare Weights for Row-Bootstrap
-#-----------------------------------------------------------
-# Each row in counts.df represents a unique predictor combination
-# We want to sample rows in proportion to their occurrence frequency
-row.totals <- rowSums(counts.df)
-row.probs <- row.totals / sum(row.totals)  # Probability of selecting each row
-
-# Sample size for row-level bootstrap
-sample.size <- n.rows
-
-
-#-----------------------------------------------------------
-# 3) Main Loop over B Bootstrap Samples
+# G. Main Loop over B Bootstrap Samples
 #-----------------------------------------------------------
 for (b in seq_len(B)) {
+    # Note: Y.df == counts.df
+    #---------------------------------------
+    # (A) 2-stage parametric bootstrap of the 128×11 count table
+    #---------------------------------------
+    # 1st stage: generate new counts from multinom
   
-    #---------------------------------------
-    # (A) Parametric bootstrap of responses
-    #---------------------------------------
-    # Generate new counts from the multinomial distribution
-    # for each row, using the cell's original total count
-    bootstrap.counts <- matrix(0, nrow = n.rows, ncol = ncol(Y.df))
-      
-      for (i in seq_len(n.rows)) {
-          # get original total count for this predictor combination
-          total.count <- sum(Y.df[i, ])
-          
-          if(total.count > 0){
-            # generate new counts from multinomial dist using est. probs
-            new.counts <- rmultinom(1, size=total.count, prob=multinomial.probs[i, ])
-          
-            bootstrap.counts[i,] <- new.counts
-        }
-    }
+    n.star <- as.vector( rmultinom(1, size = sum(Y.df[]), prob = row.probs) )
     
-    # convert to dataframe for rpart
-    bootstrap.counts.df <- as.data.frame(bootstrap.counts)
-    colnames(bootstrap.counts.df) <- colnames(Y.df)
-
-    #---------------------------------------
-    # (B) Row bootstrap in proportion to row totals
-    #---------------------------------------
-    # Generate a vector of row indices with replacement
-    # where rows are sampled with probability proportional to row.probs
-    row.indicies <- sample(seq_len(n.rows),
-                           size = sample.size,
-                           replace = TRUE,
-                           prob = row.probs)
+    # 2nd stage: generate counts for each row using multinom
     
-    # Out-of-bag indices (rows not selected in this bootstrap sample)
-    oob.idx <- setdiff(seq_len(n.rows), unique(row.indicies))
-  
-  #---------------------------------------
-  # (C) Fit rpart to row- and param-boot data
-  #---------------------------------------
-  # The "dm.method" expects a matrix of counts (the response)
-  # combined with predictor columns. thus:   bootstrap.counts.df[idx, ] ~ .
-  # and X.matrix[idx, ] for the predictor data.
-  
-  model.data <- cbind(
-    bootstrap.counts.df[row.indicies, ], # response
-    X.matrix[row.indicies, ]             # predictors
-  )
-  
-  # create formula for rpart
-  response.cols <- colnames(bootstrap.counts.df) # extract count colnames
-  response.cbind <- paste(response.cols,collapse = ",") # counts_..., counts_..., 
-  formula <- paste0("cbind(", response.cbind, ") ~ .") # cbind(counts_..., counts_...) ~ .
-  r.formula <- as.formula(formula) # convert to formula object
-  
-  dm.tree.b <- rpart(
-    formula = r.formula,
-    data = model.data,
-    method  = dm.method,
-    control = dm.control
-  )
-  
-  
-  #---------------------------------------
-  # (D) Extract tree structure information
-  #---------------------------------------
-  # Get variables used in this tree
-  vars.used <- unique(dm.tree.b$frame$var[dm.tree.b$frame$var != "<leaf>"])
-  n.vars.used[b] <- length(vars.used)
-  
-  # store top variables (first split)
-  if (length(vars.used) > 0 ){
-      
-      top.vars.used[b] <- as.character(dm.tree.b$frame$var[1])
-  } else {
-      top.vars.used[b] <- "none" # no splits just root
-      
-  }
-  
-  # store tree structure for later 
-  tree.structure[[b]] <- list(
-    variables = vars.used,
-    frame = dm.tree.b$frame,
-    splits = dm.tree.b$splits
-  )
-  
-  #---------------------------------------
-  # (E) Fit reduced model (smaller tree)
-  #---------------------------------------
-  # Create a more restricted tree (smaller)
-  dm.control.small <- rpart.control(minsplit = 5, cp = 0.01, maxdepth = 3, xval = 0, usesurrogate = 0)
-  
-  dm.tree.small.b <- rpart(
-    formula = r.formula,
-    data = model.data,
-    method = dm.method,
-    control = dm.control.small
-  )
-  
-  # compare smaller tree structure to full tree
-  vars.uses.small <- unique(dm.tree.small.b$frame$var[dm.tree.small.b$frame$var != "<leaf>"])
-  
-  #---------------------------------------
-  # (F) Predictions: OOB and full dataset
-  #---------------------------------------
-  # Out-of-bag predictions (if any OOB observations)
-  
-  if(length(oob.idx > 0)) {
-      
-      preds.oob <- predict(
-          dm.tree.b, 
-          newdata=data.frame(X.matrix[oob.idx, , drop=FALSE]), 
-          type="matrix"
-      )
-      
-      # calculate LBW prob (sum of first 10 categories)
-      # normalize by rowsums to get valid prob
-      lbw.prob.oob <- rowSums(preds.oob[, lbw.cols]) / rowSums(preds.oob)
-      Yhat.oob[oob.idx, b] <- lbw.prob.oob
-      
-  }
-  
-  
-  # Full dataset predictions
-  preds.all <- predict(
-    dm.tree.b, 
-    newdata = data.frame(X.matrix), 
-    type = "matrix"
-  )
-  
-  # Calculate LBW probability for all rows
-  lbw.prob.all <- rowSums(preds.all[, lbw.cols]) / rowSums(preds.all)
-  Yhat.all[, b] <- lbw.prob.all
-  
-  setTxtProgressBar(pb, b) # Update the progress bar
-  
+    # working as in console demo 4/24
+    boot.counts <- t(
+      sapply(1:n.rows, function(j) rmultinom(1, size = n.star[j], prob = multinomial.probs[j, ]))
+    )
+    
+    
+    colnames(boot.counts) <- colnames(Y.df)
+    boot.df <- as.data.frame(boot.counts)
+    
+    boot.counts <- t( vapply(seq_len(n.rows), function(j)
+      rmultinom(1, n.star[j], multinomial.probs[j, ]),
+      integer(ncol(counts.df)))
+    ) 
+    
+    colnames(boot.counts) <- colnames(counts.df)
+    boot.df <- as.data.frame(boot.counts)
+    
+    # 
+    # 
+    # # bootstrap.counts <- matrix(0, nrow = n.rows, ncol = ncol(Y.df))
+    # # total.count <- rmultinom(1, size = sum(Y.df[]), row.probs) #row.totals[i] #sum(Y.df[i, ])
+    # # 
+    #   for (i in seq_len(n.rows)) {
+    #       # get original total count for this predictor combination
+    #     
+    #       if(boot.counts > 0){
+    #         # generate new counts from multinomial dist using est. probs
+    #         new.counts <- rmultinom(1, size=boot.counts[i], prob=multinomial.probs[i, ])
+    #       
+    #         bootstrap.counts[i,] <- new.counts
+    #     }
+    # }
+    
+    #---------------------------------------------------------
+    # (B) fit the full DM tree on the bootstrap counts
+    #---------------------------------------------------------
+    model.data <- cbind(boot.df, X.matrix)
+    r.formula <- as.formula( paste0("cbind(", paste(colnames(boot.df), collapse = ","), ") ~ .") )
+    
+    
+    dm.tree.b <- rpart(
+      formula = r.formula,
+      data = model.data,
+      method  = dm.method,
+      control = dm.control
+    )
+    
+    #---------------------------------------------------------
+    # (C) record tree statistics
+    #--------------------------------------------------------
+    vars.used <- unique(dm.tree.b$frame$var[dm.tree.b$frame$var != "<leaf>"])
+    n.vars.used[b] <- length(vars.used)
+    top.vars.used[b] <- if (length(vars.used)) vars.used[1] else "none" # store first split variable
+    
+    tree.structure[[b]] <-list(
+      variables = vars.used,
+      frame = dm.tree.b$frame,
+      splits = dm.tree.b$splits
+    )
+    
+    
+    setTxtProgressBar(pb, b)
 }
 close(pb)
-cat("\n--- Multinomial + category-proportional bootstrap sampling completed ---\n")
-
+cat("\n--- Bootstrap sampling completed ---\n")
 
 #-----------------------------------------------------------
-# G. Decision Tree Depth Analysis for cig_0 Predictor
+# H. Decision Tree Depth Analysis for cig_0 Predictor
 #-----------------------------------------------------------
 cat("\n--- Analyzing cig_0 predictor across different tree depths ---\n")
 depths <- c(2, 3, 4, 5)
@@ -536,7 +442,7 @@ for (depth in depths) {
 
 
 #-----------------------------------------------------------
-# Comparative Analysis of Trees
+# J) Comparative Analysis of Trees
 #-----------------------------------------------------------
 cat("\n--- Comparative Analysis of Trees at Different Depths ---\n")
 
@@ -606,41 +512,42 @@ plot.data <- data.frame(
     pred.stats.compare$max.lbw.prob
   )
 )
-p.stats <- ggplot(plot.data, aes(x = factor(depth), y = value, group = type, color = type)) +
-  geom_line() +
-  geom_point(size = 3) +
-  theme_minimal() +
-  labs(title = "LBW Probability Statistics by Tree Depth",
-       x = "Maximum Tree Depth",
-       y = "LBW Probability",
-       color = "Statistic") +
-  scale_color_brewer(palette = "Set1")
-ggsave(sprintf("%s/tree_depth_comparison_%d.png", boot.pwd, year), p.stats, width = 8, height = 6)
 
+# p.stats <- ggplot(plot.data, aes(x = factor(depth), y = value, group = type, color = type)) +
+#   geom_line() +
+#   geom_point(size = 3) +
+#   theme_minimal() +
+#   labs(title = "LBW Probability Statistics by Tree Depth",
+#        x = "Maximum Tree Depth",
+#        y = "LBW Probability",
+#        color = "Statistic") +
+#   scale_color_brewer(palette = "Set1")
+# ggsave(sprintf("%s/tree_depth_comparison_%d.png", boot.pwd, year), p.stats, width = 8, height = 6)
+# 
 
-p.complexity <- ggplot(pred.stats.compare, aes(x = factor(depth))) +
-  geom_line(aes(y = n.terminal.nodes, group = 1), color = "blue") +
-  geom_point(aes(y = n.terminal.nodes), color = "blue", size = 3) +
-  geom_line(aes(y = n.variables * 5, group = 1), color = "red") +  # Scale up for visibility
-  geom_point(aes(y = n.variables * 5), color = "red", size = 3) +
-  scale_y_continuous(
-    name = "Number of Terminal Nodes",
-    sec.axis = sec_axis(~ . / 5, name = "Number of Variables Used")
-  ) +
-  theme_minimal() +
-  labs(title = "Tree Complexity by Maximum Depth",
-       x = "Maximum Tree Depth") +
-  theme(
-    axis.title.y.left = element_text(color = "blue"),
-    axis.title.y.right = element_text(color = "red")
-  )
-
-# Save the complexity plot
-ggsave(sprintf("%s/tree_complexity_comparison_%d.png", boot.pwd, year), p.complexity, width = 8, height = 6)
+# p.complexity <- ggplot(pred.stats.compare, aes(x = factor(depth))) +
+#   geom_line(aes(y = n.terminal.nodes, group = 1), color = "blue") +
+#   geom_point(aes(y = n.terminal.nodes), color = "blue", size = 3) +
+#   geom_line(aes(y = n.variables * 5, group = 1), color = "red") +  # Scale up for visibility
+#   geom_point(aes(y = n.variables * 5), color = "red", size = 3) +
+#   scale_y_continuous(
+#     name = "Number of Terminal Nodes",
+#     sec.axis = sec_axis(~ . / 5, name = "Number of Variables Used")
+#   ) +
+#   theme_minimal() +
+#   labs(title = "Tree Complexity by Maximum Depth",
+#        x = "Maximum Tree Depth") +
+#   theme(
+#     axis.title.y.left = element_text(color = "blue"),
+#     axis.title.y.right = element_text(color = "red")
+#   )
+# 
+# # Save the complexity plot
+# ggsave(sprintf("%s/tree_complexity_comparison_%d.png", boot.pwd, year), p.complexity, width = 8, height = 6)
 
 
 #-----------------------------------------------------------
-# H) Analyze Bootstrap Tree Structure Results
+# K) Analyze Bootstrap Tree Structure Results
 #-----------------------------------------------------------
 # Summarize variable usage across bootstrap samples
 var.names <- colnames(X.matrix) 
@@ -687,6 +594,14 @@ n.vars.summary <- data.frame(
   sd = sd(n.vars.used)
 )
 
+
+bootstrap.tree.results <- list(
+  var.usage = var.usage,
+  var.freq.df = var.freq.df,
+  top.var.df = top.var.df,
+  n.vars.summary = n.vars.summary
+)
+
 #-----------------------------------------------------------
 cat("\n--- Bootstrap Tree Structure Analysis ---\n")
 cat("\nFrequency of Variables Used in Trees:\n")
@@ -697,6 +612,19 @@ print(top.var.freq)
 
 cat("\nSummary of Number of Variables Used:\n")
 print(n.vars.summary)
+
+save(bootstrap.tree.results,file = sprintf("%s/bootstrap_tree_results_%d.RData", results.pwd, year))
+
+### USE table-boot-freq.R to generate tables from this data
+
+
+
+
+
+#### STOPPED HERE 4/25
+
+
+
 
 
 
@@ -919,7 +847,6 @@ create_latex_table <- function(data, common_low, common_high) {
   # Return both tables
   return(list(detailed_table = detailed_table, common_table = common_table))
 }
-
 
 tables <- create_latex_table(combined.data, lowest.vals, highest.vals)
 

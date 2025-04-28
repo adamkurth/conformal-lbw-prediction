@@ -1,6 +1,6 @@
 rm(list = ls())
 # ----- Step 1: Set up paths and determine type -----
-use.without.2.5kg <- FALSE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
+use.without.2.5kg <- TRUE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
 type <- ifelse(use.without.2.5kg, 2, 1)
 
 data.pwd <- "/Users/adamkurth/Documents/RStudio/conformal-lbw-prediction/birthweight_data"
@@ -59,26 +59,48 @@ bin.counts <- table(factor(birth.bins, levels = 1:(length(cut.points) - 1)))
 
 # Create informed prior based on actual data distribution
 if(type == 1) {
-    # Type 1: Include normal birth weights as 11th category
-    # calculate the proportion within LBW categories
-    lbw.props <- as.numeric(bin.counts) / sum(bin.counts)
-    
-    # Scale the LBW proportions to account for the normal birth weight category
-    # ensures that when we add the normal birth weight proportion,all proportions will sum to 1
-    alphavec.lbw <- lbw.props * prop.lbw
-    
-    # Add the normal birth weight proportion as the last category
-    alphavec <- c(alphavec.lbw, prop.normal)
-    
-    # category labels for plotting
-    category.labels <- c(paste0("Q", 1:10), "Normal")
-} else {
-    # Type 2: Exclude normal birth weights, use only 10 categories
-    # For Type 2, we normalize within the LBW population only
-    alphavec <- as.numeric(bin.counts) / sum(bin.counts)
-    
-    # Create category labels for plotting
-    category.labels <- paste0("Q", 1:10)
+      # Type 1: Include normal birth weights as 11th category
+      # calculate the proportion within LBW categories
+  
+      lbw.props <- as.numeric(bin.counts) / sum(bin.counts)
+      
+      # Scale the LBW proportions to account for the normal birth weight category
+      # ensures that when we add the normal birth weight proportion,all proportions will sum to 1
+      alphavec.lbw <- lbw.props * prop.lbw
+      
+      # Add the normal birth weight proportion as the last category
+      alphavec <- c(alphavec.lbw, prop.normal)
+      
+      # category labels for plotting
+      category.labels <- c(paste0("Q", 1:10), "Normal")
+      
+} else if(type == 2) {
+  
+      # Type 2: Exclude normal birth weights, use only 10 categories
+      # Just create uniform probabilities for the LBW-only case
+      alphavec <- rep(1/num.quantiles, num.quantiles)
+      
+      # Still calculate the cut points for binning future data
+      cut.points <- c(
+        min(dat.lte2.5),
+        quantile(dat.lte2.5, probs = seq(1/num.quantiles, (num.quantiles-1)/num.quantiles, 1/num.quantiles)),
+        max(dat.lte2.5)
+      )
+      
+      # Bin the data (only needed for checking, not for setting alphavec)
+      birth.bins <- cut(
+        dat.lte2.5,
+        breaks = cut.points,
+        include.lowest = TRUE,
+        right = TRUE,
+        labels = FALSE
+      )
+      
+      # Count observations (only for reporting)
+      bin.counts <- table(factor(birth.bins, levels = 1:(length(cut.points) - 1)))
+      
+      # Create category labels for plotting
+      category.labels <- paste0("Q", 1:10)
 }
 
 alpha0 <- 1
