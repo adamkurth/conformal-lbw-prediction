@@ -9,7 +9,7 @@ library(xtable)
 year <- 2021
 
 # Determine type based on data path
-use_without_2_5kg <- TRUE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
+use_without_2_5kg <- FALSE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
 type <- ifelse(use_without_2_5kg, 2, 1)
 
 # Set appropriate data path based on type
@@ -29,17 +29,9 @@ if(type == 1) {
   load(sprintf("%s/birthweight_data_rebin_%d.RData", data.pwd, year))
 }
 
-# load('birthweight_data_2021.Rdata')
-# load(sprintf("%s/birthweight_data_rebin_%d.RData", data.pwd, year))
-
 print(alphavec)
 length(alphavec)
 Y.df <- counts.df; response.cols <- colnames(Y.df)
-
-# alphavec <- load(sprintf("%s/informed_prior_%d.RData", data.pwd, 2020))
-
-# alphavec <- 1*rep(1/ncol(Y.df),ncol(Y.df)) # uniform
-# alphavec <- 1*colSums(Y.df)/sum(Y.df) # informed
 
 #-----------------------------------------------------------
 # B. Simplified Dirichlet-Multinomial Functions
@@ -134,8 +126,7 @@ mysplit <- function(y, wt, x, parms, continuous = FALSE) {
   
   if (nrow(y)==1) {counts = y}else{
     counts <- colSums(y)}
-  
-  
+
   parent.dev <- -log.dm.likelihood(counts, alpha=alphavec)
   
   # Suppose 'x' is a factor or a binary 0/1 variable
@@ -161,28 +152,145 @@ mysplit <- function(y, wt, x, parms, continuous = FALSE) {
 
     goodness[i] <- parent.dev - child.dev
   }
-  
-  # 'goodness' is a vector of length = #possible splits. We have only 1 here.
-  # 'direction' is a vector of length = #possible splits. Typically -1 means "x < cut" go left
-  #   For a categorical, you can store an integer code. We'll just do -1.
   return(list(goodness = pmax(goodness, 0), direction = direction))
 
 }
+ 
+#----------------- 4) pred() ------------------#
+mypred <- function(fit, newdata = NULL, type = c("vector", "prob", "class", "matrix")) {
+  
+  type <- match.arg(type)
+  
+  # If no new data, use data from the fit
+  if (is.null(newdata)) {
+    where <- fit$where
+  } else {
+    # Ensure newdata has the right format
+    newdata <- as.data.frame(newdata)
+    
+    # Custom tree traversal to find terminal nodes
+    where <- integer(nrow(newdata))
+    
+    # For each observation in newdata
+    for (i in 1:nrow(newdata)) {
+      # Start at root node
+      node <- 1
+      
+      # Traverse until reaching a leaf or no valid split found
+      while (TRUE) {
+        # Check if current node is a leaf
+        if (fit$frame$var[node] == "<leaf>") {
+          break
+        }
+        
+        # Get split variable name
+        split_var <- as.character(fit$frame$var[node])
+        
+        # Find split information in splits matrix
+        split_rows <- which(rownames(fit$splits) == split_var)
+        
+        if (length(split_rows) == 0) {
+          # No split information available, treat as leaf
+          break
+        }
+        
+        # Get current value for this variable
+        cur_val <- newdata[i, split_var]
+        
+        # Find which row in splits to use
+        # For binary variables, use the first split info
+        split_row <- split_rows[1]
+        split_val <- fit$splits[split_row, "index"]
+        
+        # Go left if value <= threshold
+        go_left <- !is.na(cur_val) && as.numeric(cur_val) <= split_val
+        
+        # Move to next node
+        if (go_left) {
+          # Go left
+          left_child <- 2 * node
+          if (left_child %in% as.numeric(rownames(fit$frame))) {
+            node <- left_child
+          } else {
+            # Left child doesn't exist, stay at current node
+            break
+          }
+        } else {
+          # Go right
+          right_child <- 2 * node + 1
+          if (right_child %in% as.numeric(rownames(fit$frame))) {
+            node <- right_child
+          } else {
+            # Right child doesn't exist, stay at current node
+            break
+          }
+        }
+      }
+      
+      where[i] <- node
+    }
+  }
+  
+  # Frame data
+  frame <- fit$frame
+  
+  # Initialize result matrix
+  result_matrix <- matrix(0, nrow = length(where), ncol = ncol(Y.df))
+  colnames(result_matrix) <- colnames(Y.df)
+  
+  # Get the label values (counts) for each node
+  for (i in 1:length(where)) {
+    node_idx <- where[i]
+    
+    # Try to get label from the frame
+    if ("label" %in% names(frame)) {
+      node_label <- frame$label[node_idx]
+      
+      # Handle case where label is a list
+      if (is.list(node_label)) {
+        node_label <- unlist(node_label)
+      }
+      
+      if (length(node_label) == ncol(Y.df)) {
+        result_matrix[i, ] <- node_label
+      }
+    } else if (!is.null(frame$yval2) && ncol(frame$yval2) == ncol(Y.df)) {
+      # If no label, try yval2
+      result_matrix[i, ] <- frame$yval2[node_idx, ]
+    }
+  }
+  
+  # Return appropriate output based on type
+  if (type == "matrix") {
+    # Return raw counts
+    return(result_matrix)
+  } else if (type == "vector" || type == "prob") {
+    # Convert counts to probabilities using Dirichlet smoothing
+    probs <- t(apply(result_matrix, 1, function(counts) {
+      (counts + alphavec) / sum(counts + alphavec)
+    }))
+    colnames(probs) <- colnames(Y.df)
+    return(probs)
+  } else if (type == "class") {
+    # Return index of highest probability category
+    probs <- t(apply(result_matrix, 1, function(counts) {
+      (counts + alphavec) / sum(counts + alphavec)
+    }))
+    result <- apply(probs, 1, which.max)
+    return(result)
+  }
+}
 
-dm.method <- list(init=myinit, eval=myeval, split=mysplit, method="dm")
+
+
+
+dm.method <- list(init=myinit, eval=myeval, split=mysplit, pred=mypred, method="dm")
+# dm.method <- list(init=myinit, eval=myeval, split=mysplit, method="dm")
 
 #-----------------------------------------------------------
 # D. Fit rpart Tree Using Our Custom DM Method
 #-----------------------------------------------------------
 cat("\n--- Fitting the DM-based rpart tree ---\n")
-
-# We set various control parameters to reduce complexity:
-#   - usesurrogate=0, maxsurrogate=0 => no surrogate splits
-#   - maxcompete=0 => do not evaluate competing splits
-#   - xval=0 => no cross-validation
-#   - cp=0 => allow splits with minimal improvement
-#   - minsplit=5 => each node must have at least 5 obs
-#   - maxdepth=5 => limit tree depth to 5
 
 dm.control <- rpart.control(minsplit=2, cp=0, maxdepth=8, xval=0, usesurrogate = 0)
 dm.tree <- rpart(
@@ -191,6 +299,10 @@ dm.tree <- rpart(
   method = dm.method,
   control = dm.control
 )
+
+
+preds <- mypred(dm.tree, newdata = data.frame(X.matrix), type = "prob")
+# head(preds)  # Check the first few predictions
 
 #-----------------------------------------------------------
 # E. Save and Inspect Results
@@ -209,9 +321,32 @@ path.rpart(dm.tree, node = 3)     # right child => mrace15 = 1
 # F. Multinomial Parametric Bootstrap Sampling
 #-----------------------------------------------------------
 
-B <- 10000  # Number of bootstrap samples
+# B <- 10000  # Number of bootstrap samples
+B <- 100
 n.rows <- nrow(counts.df)
-lbw.cols <- 1:10  # Indices of LBW categories (1:10, if 11th is above_2.5kg)
+
+# category definitions
+get.category.cols <- function(type = "lbw"){
+
+    if (type == "lbw") {
+      return(1:10)  # Indices of LBW categories 
+    } else if (type == "nbw") {
+      return(11:ncol(Y.df))  # Adjust based on your data structure
+    } else if (type == "all") {
+      return(1:ncol(Y.df))  # All categories
+    } else {
+      stop("Invalid category type. Use 'lbw', 'nbw', or 'all'")
+    }
+
+}
+
+# define category cols 
+lbw.cols <- get.category.cols(type = "lbw")
+nbw.cols <- get.category.cols(type = "nbw")
+
+# create one structure to store all probability vectors 
+# each element in list is bootstrap sample, of matrix n.rows x ncol(Y.df)
+Yhat <- vector("list", length = B)
 
 
 # Dirichlet-smoothed cell probabilities
@@ -236,15 +371,14 @@ row.probs <- row.probs / sum(row.probs)  # Normalize to sum to 1
 barplot(row.probs, main="Row Probabilities for Bootstrap Sampling", 
         xlab="Row Index", ylab="Probability")
 
-
-
 # initialize list for tree structure information
 tree.structure <- list()
 top.vars.used <- character(B)
 n.vars.used <- integer(B)
 
-cat("Multinomial parametric bootstrap     (no row/OOB resampling)\n")
+cat("Multinomial parametric bootstrap     (inter-/intra- resampling)\n")
 pb <- txtProgressBar(0, B, style = 3)
+
 
 #-----------------------------------------------------------
 # G. Main Loop over B Bootstrap Samples
@@ -255,12 +389,10 @@ for (b in seq_len(B)) {
     # (A) 2-stage parametric bootstrap of the 128×11 count table
     #---------------------------------------
     # 1st stage: generate new counts from multinom
-  
+
     n.star <- as.vector( rmultinom(1, size = sum(Y.df[]), prob = row.probs) )
     
     # 2nd stage: generate counts for each row using multinom
-    
-    # working as in console demo 4/24
     boot.counts <- t(
       sapply(1:n.rows, function(j) rmultinom(1, size = n.star[j], prob = multinomial.probs[j, ]))
     )
@@ -269,30 +401,15 @@ for (b in seq_len(B)) {
     colnames(boot.counts) <- colnames(Y.df)
     boot.df <- as.data.frame(boot.counts)
     
-    boot.counts <- t( vapply(seq_len(n.rows), function(j)
-      rmultinom(1, n.star[j], multinomial.probs[j, ]),
-      integer(ncol(counts.df)))
-    ) 
+    # alternative implementation using vapply
+    # boot.counts <- t( vapply(seq_len(n.rows), function(j)
+    #   rmultinom(1, n.star[j], multinomial.probs[j, ]),
+    #   integer(ncol(counts.df)))
+    # ) 
     
     colnames(boot.counts) <- colnames(counts.df)
     boot.df <- as.data.frame(boot.counts)
-    
-    # 
-    # 
-    # # bootstrap.counts <- matrix(0, nrow = n.rows, ncol = ncol(Y.df))
-    # # total.count <- rmultinom(1, size = sum(Y.df[]), row.probs) #row.totals[i] #sum(Y.df[i, ])
-    # # 
-    #   for (i in seq_len(n.rows)) {
-    #       # get original total count for this predictor combination
-    #     
-    #       if(boot.counts > 0){
-    #         # generate new counts from multinomial dist using est. probs
-    #         new.counts <- rmultinom(1, size=boot.counts[i], prob=multinomial.probs[i, ])
-    #       
-    #         bootstrap.counts[i,] <- new.counts
-    #     }
-    # }
-    
+  
     #---------------------------------------------------------
     # (B) fit the full DM tree on the bootstrap counts
     #---------------------------------------------------------
@@ -319,12 +436,354 @@ for (b in seq_len(B)) {
       frame = dm.tree.b$frame,
       splits = dm.tree.b$splits
     )
+
+
+    #---------------------------------------------------------
+    # (D) Get predicted probability vectors
+    #--------------------------------------------------------
+    # custom predict function to get probability vectors
+    all.preds <- mypred(dm.tree.b, newdata = data.frame(X.matrix), type = "prob")
     
+    # Store the complete probability matrix for this bootstrap sample
+    Yhat[[b]] <- all.preds
+  
     
     setTxtProgressBar(pb, b)
 }
 close(pb)
 cat("\n--- Bootstrap sampling completed ---\n")
+
+
+
+
+
+
+
+
+
+
+analyze_bootstrap_samples <- function(Yhat, lbw.cols) {
+  B <- length(Yhat)  # Number of bootstrap samples
+  
+  # 1. Analyze probability variation across bootstrap samples
+  cat("\n===== Probability Variation Across Bootstrap Samples =====\n")
+  
+  # Function to analyze a specific category across all bootstrap samples
+  analyze_category <- function(cat_idx) {
+    # Extract probabilities for this category from all bootstrap samples
+    cat_probs <- sapply(1:B, function(b) {
+      # Extract column for this category from each bootstrap sample
+      Yhat[[b]][, cat_idx]
+    })
+    
+    # Calculate statistics
+    mean_probs <- rowMeans(cat_probs)
+    sd_probs <- apply(cat_probs, 1, sd)
+    cv_probs <- sd_probs / mean_probs
+    
+    return(list(
+      mean = mean_probs,
+      sd = sd_probs,
+      cv = cv_probs,
+      min = apply(cat_probs, 1, min),
+      max = apply(cat_probs, 1, max)
+    ))
+  }
+  
+  # Analyze all categories
+  category_stats <- lapply(1:ncol(Yhat[[1]]), analyze_category)
+  
+  # Summarize results
+  cat("Category-level statistics across bootstrap samples:\n")
+  for (i in 1:length(category_stats)) {
+    cat("Category", i, "- Mean CV:", mean(category_stats[[i]]$cv), 
+        ", Max CV:", max(category_stats[[i]]$cv), "\n")
+  }
+  
+  # 2. Calculate LBW probability for each bootstrap sample
+  cat("\n===== LBW Probability Analysis =====\n")
+  
+  # Calculate LBW probability for each observation across bootstrap samples
+  lbw_probs <- matrix(0, nrow = nrow(Yhat[[1]]), ncol = B)
+  for (b in 1:B) {
+    lbw_probs[, b] <- rowSums(Yhat[[b]][, lbw.cols, drop = FALSE])
+  }
+  
+  # Calculate statistics
+  lbw_means <- rowMeans(lbw_probs)
+  lbw_sds <- apply(lbw_probs, 1, sd)
+  lbw_cvs <- lbw_sds / lbw_means
+  
+  # Summarize results
+  cat("LBW probability statistics:\n")
+  cat("Mean LBW probability:", mean(lbw_means), "\n")
+  cat("SD of mean LBW probabilities:", sd(lbw_means), "\n")
+  cat("Mean CV of LBW probabilities:", mean(lbw_cvs), "\n")
+  cat("Number of unique mean LBW probabilities:", length(unique(round(lbw_means, 4))), "\n")
+  
+  # 3. Check consistency of category proportions
+  cat("\n===== Category Proportion Consistency =====\n")
+  
+  # Calculate category proportions for each bootstrap sample
+  cat_props <- matrix(0, nrow = B, ncol = ncol(Yhat[[1]]))
+  colnames(cat_props) <- colnames(Yhat[[1]])
+  
+  for (b in 1:B) {
+    # Calculate mean probability for each category
+    cat_props[b, ] <- colMeans(Yhat[[b]])
+  }
+  
+  # Calculate statistics
+  cat_prop_means <- colMeans(cat_props)
+  cat_prop_sds <- apply(cat_props, 2, sd)
+  cat_prop_cvs <- cat_prop_sds / cat_prop_means
+  
+  # Create summary data frame
+  prop_summary <- data.frame(
+    category = colnames(cat_props),
+    mean_prob = cat_prop_means,
+    sd = cat_prop_sds,
+    cv = cat_prop_cvs
+  )
+  
+  # Print summary
+  print(prop_summary)
+  
+  # 4. Analyze terminal node assignment consistency
+  cat("\n===== Terminal Node Assignment Consistency =====\n")
+  
+  # Check if we can identify terminal nodes from probability patterns
+  # Create a function to identify unique probability vectors
+  identify_patterns <- function(b) {
+    # Round probabilities to reduce numerical noise
+    rounded_probs <- round(Yhat[[b]], 6)
+    
+    # Identify unique patterns
+    unique_patterns <- unique(apply(rounded_probs, 1, paste, collapse = ","))
+    
+    return(list(
+      num_patterns = length(unique_patterns),
+      patterns = unique_patterns
+    ))
+  }
+  
+  # Analyze patterns across bootstrap samples
+  pattern_counts <- sapply(1:B, function(b) identify_patterns(b)$num_patterns)
+  
+  # Summarize results
+  cat("Number of unique probability vectors per bootstrap sample:\n")
+  print(summary(pattern_counts))
+  
+  # Return the comprehensive analysis results
+  return(list(
+    category_stats = category_stats,
+    lbw_stats = list(means = lbw_means, sds = lbw_sds, cvs = lbw_cvs),
+    category_proportions = prop_summary,
+    pattern_counts = pattern_counts
+  ))
+}
+compare_category_predictions <- function(Yhat, category_idx) {
+  # Get total number of bootstrap samples
+  B <- length(Yhat)
+  
+  # Extract predictions for this category across all bootstrap samples
+  category_preds <- matrix(0, nrow = nrow(Yhat[[1]]), ncol = B)
+  for (b in 1:B) {
+    category_preds[, b] <- Yhat[[b]][, category_idx]
+  }
+  
+  # Calculate statistics
+  means <- rowMeans(category_preds)
+  sds <- apply(category_preds, 1, sd)
+  cvs <- sds / means
+  
+  # Plot results
+  par(mfrow = c(2, 2))
+  
+  # Plot 1: Distribution of mean probabilities
+  hist(means, 
+       main = paste("Distribution of Mean Probabilities -", colnames(Yhat[[1]])[category_idx]),
+       xlab = "Mean Probability", 
+       col = "lightblue", border = "white")
+  
+  # Plot 2: Distribution of standard deviations
+  hist(sds, 
+       main = "Distribution of Standard Deviations",
+       xlab = "Standard Deviation", 
+       col = "lightblue", border = "white")
+  
+  # Plot 3: Distribution of CVs
+  hist(cvs, 
+       main = "Distribution of Coefficients of Variation",
+       xlab = "CV", 
+       col = "lightblue", border = "white")
+  
+  # Plot 4: Scatter plot of SD vs. Mean
+  plot(means, sds, 
+       main = "Standard Deviation vs. Mean",
+       xlab = "Mean Probability", ylab = "Standard Deviation",
+       pch = 19, col = "blue")
+  
+  # Reset plot parameters
+  par(mfrow = c(1, 1))
+  
+  # Return statistics
+  return(list(
+    means = means,
+    sds = sds,
+    cvs = cvs,
+    overall_mean = mean(means),
+    overall_sd = sd(means),
+    mean_cv = mean(cvs)
+  ))
+}
+
+# Run for each category (example for categories 1, 6, and 11)
+cat1_analysis <- compare_category_predictions(Yhat, 1) # First category
+cat6_analysis <- compare_category_predictions(Yhat, 6) # Middle category
+cat11_analysis <- compare_category_predictions(Yhat, 11) # Last category (above_2.5kg)
+
+# Compare statistics across categories
+category_comparison <- data.frame(
+  category = c(colnames(Yhat[[1]])[1], colnames(Yhat[[1]])[6], colnames(Yhat[[1]])[11]),
+  mean_prob = c(cat1_analysis$overall_mean, cat6_analysis$overall_mean, cat11_analysis$overall_mean),
+  sd_prob = c(cat1_analysis$overall_sd, cat6_analysis$overall_sd, cat11_analysis$overall_sd),
+  mean_cv = c(cat1_analysis$mean_cv, cat6_analysis$mean_cv, cat11_analysis$mean_cv)
+)
+
+print(category_comparison)
+# Run the comprehensive analysis
+bootstrap_analysis <- analyze_bootstrap_samples(Yhat, lbw.cols)
+
+# Create visualizations to show results
+par(mfrow = c(2, 1))
+
+# all category mean predicted probabilities
+hist(bootstrap_analysis$category_stats[[1]],
+     main = "Distribution of Mean Predicted Probabilities",
+     xlab = "Mean Probability", ylab = "Frequency",
+     col = "lightblue", border = "white")
+
+# 2. Plot CV of category proportions
+barplot(bootstrap_analysis$category_proportions$cv, 
+        main = "Coefficient of Variation by Category",
+        xlab = "Category", ylab = "CV",
+        col = "lightblue",
+        names.arg = 1:nrow(bootstrap_analysis$category_proportions), 
+        las = 2, cex.names = 0.7)
+
+# Reset plotting parameters
+par(mfrow = c(1, 1))
+
+
+# 1. Validate full probability vectors
+cat("\n===== Full Probability Vector Validation =====\n")
+vector_validation <- validate_full_probability_vectors(dm.tree.b, data.frame(X.matrix))
+print(vector_validation)
+
+# 4. Compare with original data
+cat("\n===== Comparison with Original Data =====\n")
+data_comparison <- compare_with_original_data(dm.tree.b, data.frame(X.matrix), Y.df)
+print(data_comparison)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#-----------------------------------------------------------
+# Depth distributions visualization
+
+library(reshape2)
+library(dplyr)
+library(ggplot2)
+
+# get all possible predictor variables
+all.vars <- colnames(X.matrix)
+n.vars <- length(all.vars)
+co.occur.mat <- matrix(0, nrow = n.vars, ncol = n.vars, dimnames = list(all.vars, all.vars))
+depth.sums <- setNames(numeric(n.vars), all.vars)
+depth.counts <- setNames(numeric(n.vars), all.vars)
+depth.values <- vector("list", length = n.vars)
+names(depth.values) <- all.vars
+
+for (b in seq_len(B)){ 
+  tree <- tree.structure[[b]]
+  frame <- tree$frame
+  vars.used <- tree$variables
+  
+  # update co-coccurence matrix
+  if (length(vars.used) >= 1) {
+      idx <- which(all.vars %in% vars.used)
+      co.occur.mat[idx, idx] <- co.occur.mat[idx, idx] + 1
+  }
+  
+  # compute depth per node
+  node.ids <- as.numeric(rownames(frame))
+  node.depths <- floor(log2(node.ids))
+  vars <- frame$var
+  internal.nodes <- which(vars != "<leaf>")
+  
+    for (i in internal.nodes) {
+      var <- vars[i]
+      depth <- node.depths[i]
+        if (var %in% names(depth.sums)) {
+            depth.sums[var] <- depth.sums[var] + depth
+            depth.counts[var] <- depth.counts[var] + 1
+            depth.values[[var]] <- c(depth.values[[var]], depth)
+        }
+    }
+}    
+
+#-----------------------------------------------------------
+co.occur.prop <- co.occur.mat / B
+avg.depths <- depth.sums / depth.counts
+depth.df <- data.frame(
+  Variable = names(avg.depths),
+  AvgDepth = avg.depths
+)
+
+depth.long <- bind_rows(
+  lapply(names(depth.values), function(var) {
+    depths <- depth.values[[var]]
+    if (length(depths) > 0) {
+      data.frame(Variable = var, Depth = depths)
+    }
+  })
+)
+depth.long$Variable <- factor(depth.long$Variable, levels = depth.df$Variable[order(depth.df$AvgDepth)])
+
+means <- depth.long %>%
+  group_by(Variable) %>%
+  summarise(mean_depth = mean(Depth))
+
+ggplot(depth.long, aes(x = Depth, fill = Variable)) +
+  geom_histogram(binwidth = 1, alpha = 0.6) +
+  geom_vline(data = means, aes(xintercept = mean_depth),
+             color = "black", linetype = "dashed", size = 0.5) +
+  facet_wrap(~ Variable, scales = "free_y") +
+  labs(title = "Distribution of Depths for Each Predictor Variable",
+       x = "Depth",
+       y = "Number of Splits") +
+  theme_minimal()
+
+ggsave(sprintf("%s/depth_distributions_%d.png", boot.pwd, type), width = 12, height = 8, dpi = 400)
 
 #-----------------------------------------------------------
 # H. Decision Tree Depth Analysis for cig_0 Predictor
@@ -492,59 +951,13 @@ first.splits <- sapply(as.character(depths), function(d) tree.sum[[d]]$first.spl
 cat("\nFirst Split Variable at Each Depth:", paste(first.splits, collapse = ", "), "\n")
 
 if (length(unique(first.splits)) == 1){
-  
     cat("First split is consistent across all depths\n")
 } else {
-    
     cat("First split varies across different depths\n")
 }
 
 save(trees, tree.sum, var.mats, var.across.depths, pred.stats.compare,
      file = sprintf("%s/tree_depth_comparison_%d.RData", results.pwd, year))
-
-
-plot.data <- data.frame(
-  depth = rep(depths, 3),
-  type = c(rep("min", length(depths)), rep("mean", length(depths)), rep("max", length(depths))),
-  value = c(
-    pred.stats.compare$min.lbw.prob,
-    pred.stats.compare$mean.lbw.prob,
-    pred.stats.compare$max.lbw.prob
-  )
-)
-
-# p.stats <- ggplot(plot.data, aes(x = factor(depth), y = value, group = type, color = type)) +
-#   geom_line() +
-#   geom_point(size = 3) +
-#   theme_minimal() +
-#   labs(title = "LBW Probability Statistics by Tree Depth",
-#        x = "Maximum Tree Depth",
-#        y = "LBW Probability",
-#        color = "Statistic") +
-#   scale_color_brewer(palette = "Set1")
-# ggsave(sprintf("%s/tree_depth_comparison_%d.png", boot.pwd, year), p.stats, width = 8, height = 6)
-# 
-
-# p.complexity <- ggplot(pred.stats.compare, aes(x = factor(depth))) +
-#   geom_line(aes(y = n.terminal.nodes, group = 1), color = "blue") +
-#   geom_point(aes(y = n.terminal.nodes), color = "blue", size = 3) +
-#   geom_line(aes(y = n.variables * 5, group = 1), color = "red") +  # Scale up for visibility
-#   geom_point(aes(y = n.variables * 5), color = "red", size = 3) +
-#   scale_y_continuous(
-#     name = "Number of Terminal Nodes",
-#     sec.axis = sec_axis(~ . / 5, name = "Number of Variables Used")
-#   ) +
-#   theme_minimal() +
-#   labs(title = "Tree Complexity by Maximum Depth",
-#        x = "Maximum Tree Depth") +
-#   theme(
-#     axis.title.y.left = element_text(color = "blue"),
-#     axis.title.y.right = element_text(color = "red")
-#   )
-# 
-# # Save the complexity plot
-# ggsave(sprintf("%s/tree_complexity_comparison_%d.png", boot.pwd, year), p.complexity, width = 8, height = 6)
-
 
 #-----------------------------------------------------------
 # K) Analyze Bootstrap Tree Structure Results
@@ -616,13 +1029,6 @@ print(n.vars.summary)
 save(bootstrap.tree.results,file = sprintf("%s/bootstrap_tree_results_%d.RData", results.pwd, year))
 
 ### USE table-boot-freq.R to generate tables from this data
-
-
-
-
-
-#### STOPPED HERE 4/25
-
 
 
 
