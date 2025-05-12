@@ -9,7 +9,7 @@ library(xtable)
 year <- 2021
 
 # Determine type based on data path
-use_without_2_5kg <- FALSE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
+use_without_2_5kg <- TRUE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
 type <- ifelse(use_without_2_5kg, 2, 1)
 
 # Set appropriate data path based on type
@@ -158,72 +158,77 @@ mysplit <- function(y, wt, x, parms, continuous = FALSE) {
  
 #----------------- 4) pred() ------------------#
 mypred <- function(fit, newdata = NULL, type = c("vector", "prob", "class", "matrix")) {
-  
   type <- match.arg(type)
   
-  # If no new data, use data from the fit
+  # Create a modified copy of the tree to avoid changing the original
+  fit_copy <- fit
+  
+  # Check and repair the var field for the root node if needed
+  root_row <- which(rownames(fit_copy$frame) == "1")
+  if (length(root_row) > 0) {
+    if (is.na(fit_copy$frame$var[root_row]) || fit_copy$frame$var[root_row] == "<leaf>") {
+      cat("WARNING: Root node var is NA or leaf - attempting to fix\n")
+      
+      # Try to infer the root variable from splits
+      split_vars <- rownames(fit_copy$splits)
+      if (length(split_vars) > 0) {
+        # Find the first variable used in splits
+        root_var <- split_vars[1]
+        fit_copy$frame$var[root_row] <- root_var
+        cat("Setting root node var to:", root_var, "\n")
+      } else {
+        cat("ERROR: Could not determine root variable from splits\n")
+      }
+    }
+  }
+  
+  
+  # Determine terminal nodes for each observation
   if (is.null(newdata)) {
-    where <- fit$where
+    where <- fit_copy$where
   } else {
-    # Ensure newdata has the right format
     newdata <- as.data.frame(newdata)
-    
-    # Custom tree traversal to find terminal nodes
     where <- integer(nrow(newdata))
     
-    # For each observation in newdata
     for (i in 1:nrow(newdata)) {
-      # Start at root node
+      # Start at root
       node <- 1
       
-      # Traverse until reaching a leaf or no valid split found
       while (TRUE) {
-        # Check if current node is a leaf
-        if (fit$frame$var[node] == "<leaf>") {
+        node_str <- as.character(node)
+        if (!node_str %in% rownames(fit_copy$frame)) break
+        
+        node_row <- which(rownames(fit_copy$frame) == node_str)
+        varname <- fit_copy$frame$var[node_row]
+        
+        if (is.na(varname) || varname == "<leaf>") break
+        
+        # Find split information for this variable
+        split_rows <- which(rownames(fit_copy$splits) == varname)
+        if (length(split_rows) == 0) break
+        
+        # Get the split value
+        split_val <- fit_copy$splits[split_rows[1], "index"]
+        
+        # Get current observation's value for the split variable
+        if (!varname %in% colnames(newdata)) {
+          cat("WARNING: Variable", varname, "not found in newdata for observation", i, "\n")
           break
         }
         
-        # Get split variable name
-        split_var <- as.character(fit$frame$var[node])
+        cur_val <- newdata[i, varname]
         
-        # Find split information in splits matrix
-        split_rows <- which(rownames(fit$splits) == split_var)
-        
-        if (length(split_rows) == 0) {
-          # No split information available, treat as leaf
-          break
-        }
-        
-        # Get current value for this variable
-        cur_val <- newdata[i, split_var]
-        
-        # Find which row in splits to use
-        # For binary variables, use the first split info
-        split_row <- split_rows[1]
-        split_val <- fit$splits[split_row, "index"]
-        
-        # Go left if value <= threshold
+        # Determine direction based on split
         go_left <- !is.na(cur_val) && as.numeric(cur_val) <= split_val
         
-        # Move to next node
-        if (go_left) {
-          # Go left
-          left_child <- 2 * node
-          if (left_child %in% as.numeric(rownames(fit$frame))) {
-            node <- left_child
-          } else {
-            # Left child doesn't exist, stay at current node
-            break
-          }
+        # Move to child node or stop if not available
+        child_node <- if (go_left) 2*node else 2*node + 1
+        child_str <- as.character(child_node)
+        
+        if (child_str %in% rownames(fit_copy$frame)) {
+          node <- child_node
         } else {
-          # Go right
-          right_child <- 2 * node + 1
-          if (right_child %in% as.numeric(rownames(fit$frame))) {
-            node <- right_child
-          } else {
-            # Right child doesn't exist, stay at current node
-            break
-          }
+          break
         }
       }
       
@@ -231,61 +236,155 @@ mypred <- function(fit, newdata = NULL, type = c("vector", "prob", "class", "mat
     }
   }
   
-  # Frame data
-  frame <- fit$frame
-  
-  # Initialize result matrix
-  result_matrix <- matrix(0, nrow = length(where), ncol = ncol(Y.df))
+  # Create result matrix
+  result_matrix <- matrix(0, nrow=length(where), ncol=ncol(Y.df))
   colnames(result_matrix) <- colnames(Y.df)
   
-  # Get the label values (counts) for each node
+  # Extract counts for each observation
+  unique_nodes <- unique(where)
+  # cat("Number of unique terminal nodes:", length(unique_nodes), "\n")
+  
   for (i in 1:length(where)) {
-    node_idx <- where[i]
+    node_str <- as.character(where[i])
+    row_idx <- which(rownames(fit_copy$frame) == node_str)
     
-    # Try to get label from the frame
-    if ("label" %in% names(frame)) {
-      node_label <- frame$label[node_idx]
-      
-      # Handle case where label is a list
-      if (is.list(node_label)) {
-        node_label <- unlist(node_label)
+    if (length(row_idx) > 0) {
+      if (!is.null(fit_copy$frame$yval2)) {
+        # Try to get counts from yval2
+        if (is.matrix(fit_copy$frame$yval2) && ncol(fit_copy$frame$yval2) == ncol(Y.df)) {
+          result_matrix[i,] <- fit_copy$frame$yval2[row_idx, ]
+        }
+      } else if ("label" %in% names(fit_copy$frame)) {
+        # Try to get label from frame
+        node_label <- fit_copy$frame$label[row_idx]
+        if (is.list(node_label)) node_label <- unlist(node_label)
+        if (length(node_label) == ncol(Y.df)) {
+          result_matrix[i, ] <- node_label
+        }
       }
-      
-      if (length(node_label) == ncol(Y.df)) {
-        result_matrix[i, ] <- node_label
-      }
-    } else if (!is.null(frame$yval2) && ncol(frame$yval2) == ncol(Y.df)) {
-      # If no label, try yval2
-      result_matrix[i, ] <- frame$yval2[node_idx, ]
     }
   }
   
-  # Return appropriate output based on type
+  # Apply Dirichlet smoothing and return appropriate format
   if (type == "matrix") {
-    # Return raw counts
     return(result_matrix)
-  } else if (type == "vector" || type == "prob") {
-    # Convert counts to probabilities using Dirichlet smoothing
-    probs <- t(apply(result_matrix, 1, function(counts) {
-      (counts + alphavec) / sum(counts + alphavec)
-    }))
-    colnames(probs) <- colnames(Y.df)
+  }
+  
+  probs <- t(apply(result_matrix, 1, function(counts) {
+    (counts + alphavec) / sum(counts + alphavec)
+  }))
+  colnames(probs) <- colnames(Y.df)
+  
+  unique_probs <- nrow(unique(round(probs, 8)))
+  # cat("Number of unique probability patterns:", unique_probs, "\n")
+  
+  if (type == "vector" || type == "prob") {
     return(probs)
   } else if (type == "class") {
-    # Return index of highest probability category
-    probs <- t(apply(result_matrix, 1, function(counts) {
-      (counts + alphavec) / sum(counts + alphavec)
-    }))
-    result <- apply(probs, 1, which.max)
-    return(result)
+    return(apply(probs, 1, which.max))
   }
 }
 
-
-
+# original
+#----------------- 4) pred() ------------------#
+# mypred <- function(fit, newdata = NULL, type = c("vector", "prob", "class", "matrix")) {
+#   # 1. argument setup
+#   type <- match.arg(type) # ensure type is valid
+#   
+#   # 2. determine terminal nodes i.e. "where" for each observation 
+#   if (is.null(newdata)){
+#     # no new data provided, use terminal node assignment from fitting
+#     where <- fit$where
+#   } else {
+#     newdata <- as.data.frame(newdata) 
+#     where <- integer(nrow(newdata)) # initialize node assignments
+#     
+#     for (i in 1:nrow(newdata)){
+#       # start at root
+#       node <- 1
+#       
+#       while (TRUE){ # loop until leaf
+#         if (fit$frame$var[node] == "<leaf>") break # reached leaf
+#         
+#         split.var <- as.character(fit$frame$var[node]) # split on this variable
+#         split.rows <- which(rownames(fit$splits) == split.var) # find split info
+#         
+#         if(length(split.rows) == 0) break # no split info: treat as leaf
+#         
+#         cur.val <- newdata[i, split.var] # get current value 
+#         split.row <- split.rows[1] # first split info
+#         split.val <- fit$splits[split.row, "index"] # get split value
+#         
+#         
+#         # decide direction based on split
+#         go.left <- !is.na(cur.val) && as.numeric(cur.val) <= split.val
+#         
+#         # traverse to child node of stop if not available 
+#         if (go.left){
+#           left.child <- 2*node
+#           if (left.child %in% as.numeric(rownames(fit$frame))){
+#             node <- left.child 
+#           } else break # left child doesn't exist
+#         } else {
+#           right.child <- 2*node + 1
+#           if (right.child %in% as.numeric(rownames(fit$frame))){
+#             node <- right.child
+#           } else break # right child doesn't exist
+#         }
+#       }
+#       
+#       where[i] <- node # assign final node
+#     }
+#   }
+#   
+#   # 3. construct result matrix w/ label counts from terminal nodes
+#   frame <- fit$frame
+#   result.matrix <- matrix(0, nrow=length(where), ncol=ncol(Y.df))
+#   colnames(result.matrix) <- colnames(Y.df)
+#   
+#   for (i in 1:length(where)) { # for each observation 
+#     node.idx <- where[i]
+#     
+#     if ("label" %in% names(frame)){ # try to get label from frame
+#       
+#       node.label <- frame$label[node.idx]
+#       
+#       if (is.list(node.label)) node.label <- unlist(node.label) # unlist
+#       
+#       if (length(node.label) == ncol(Y.df)) {
+#         result.matrix[i, ] <- node.label # assign label counts
+#       }
+#       
+#     } else if (!is.null(frame$yval2) && ncol(frame$yval2) == ncol(Y.df)) { # try to get yval2 for counts
+#       # if no label, try yval2
+#       result.matrix[i, ] <- frame$yval2[node.idx, ]
+#     }
+#   }
+#   
+#   # 4. convert counts to probabilities or predicted class
+#   if (type == "matrix") {
+#     return(result.matrix) # return raw counts
+#   }
+#   
+#   # use dirichlet smoothing to convert counts to probabilities
+#   probs <- t(apply(result.matrix, 1, function(counts){
+#     (counts + alphavec) / sum(counts + alphavec)
+#   }))
+#   colnames(probs) <- colnames(Y.df)
+#   
+#   # 5. return based on type 
+#   if (type == "vector" || type == "prob") {
+#     return(probs) # return smoothed probabilities
+#   } else if (type == "class") {
+#     result <- apply(probs, 1, which.max) # return index of highest prob birth weight category
+#     return(result)
+#   }
+#   
+#   
+# }
 
 dm.method <- list(init=myinit, eval=myeval, split=mysplit, pred=mypred, method="dm")
-# dm.method <- list(init=myinit, eval=myeval, split=mysplit, method="dm")
+# pred <- mypred(dm.tree, newdata = data.frame(X.matrix), type = "prob")
 
 #-----------------------------------------------------------
 # D. Fit rpart Tree Using Our Custom DM Method
@@ -301,8 +400,20 @@ dm.tree <- rpart(
 )
 
 
-preds <- mypred(dm.tree, newdata = data.frame(X.matrix), type = "prob")
-# head(preds)  # Check the first few predictions
+# preds <- mypred(dm.tree, newdata = data.frame(X.matrix), type = "prob")
+# head(preds, 10)
+
+# write.csv(preds, file = sprintf("/Users/adamkurth/Downloads/preds_%d.csv", year), row.names = FALSE)
+# dim(mypreds) # 128 x 11
+#   - hits "where <- fit$where" and outputs pred. prob. vector for 128 rows
+#   - retrieves terminal node indices for each row
+#   - "result.matrix" builds one row per terminal node (i.e. 128 total)
+#   - "frame$label[node.idx]" contains label counts at leaf
+#   - each i-th row in result.matrix represents raw counts of label occurrences at term. node that i-th obs falls in.
+#    -- i.e. node 12 has 3 examples w/ labels [1,0,0,...][1,1,0,...][0,1,0,...] then counts might look like [2,2,0,...]
+#   - "probs" smooths the counts into prob. using alphavec, sum to 1
+#   - sum of each row = 1, each column = category
+
 
 #-----------------------------------------------------------
 # E. Save and Inspect Results
@@ -321,8 +432,8 @@ path.rpart(dm.tree, node = 3)     # right child => mrace15 = 1
 # F. Multinomial Parametric Bootstrap Sampling
 #-----------------------------------------------------------
 
-# B <- 10000  # Number of bootstrap samples
-B <- 100
+B <- 10000  # Number of bootstrap samples
+# B <- 100
 n.rows <- nrow(counts.df)
 
 # category definitions
@@ -397,26 +508,17 @@ for (b in seq_len(B)) {
       sapply(1:n.rows, function(j) rmultinom(1, size = n.star[j], prob = multinomial.probs[j, ]))
     )
     
-    
     colnames(boot.counts) <- colnames(Y.df)
     boot.df <- as.data.frame(boot.counts)
+
     
-    # alternative implementation using vapply
-    # boot.counts <- t( vapply(seq_len(n.rows), function(j)
-    #   rmultinom(1, n.star[j], multinomial.probs[j, ]),
-    #   integer(ncol(counts.df)))
-    # ) 
-    
-    colnames(boot.counts) <- colnames(counts.df)
-    boot.df <- as.data.frame(boot.counts)
-  
     #---------------------------------------------------------
     # (B) fit the full DM tree on the bootstrap counts
     #---------------------------------------------------------
     model.data <- cbind(boot.df, X.matrix)
     r.formula <- as.formula( paste0("cbind(", paste(colnames(boot.df), collapse = ","), ") ~ .") )
     
-    
+    # fit the tree on the bootstrap sample
     dm.tree.b <- rpart(
       formula = r.formula,
       data = model.data,
@@ -454,262 +556,328 @@ close(pb)
 cat("\n--- Bootstrap sampling completed ---\n")
 
 
-
-
-
-
-
-
-
-
-analyze_bootstrap_samples <- function(Yhat, lbw.cols) {
-  B <- length(Yhat)  # Number of bootstrap samples
-  
-  # 1. Analyze probability variation across bootstrap samples
-  cat("\n===== Probability Variation Across Bootstrap Samples =====\n")
-  
-  # Function to analyze a specific category across all bootstrap samples
-  analyze_category <- function(cat_idx) {
-    # Extract probabilities for this category from all bootstrap samples
-    cat_probs <- sapply(1:B, function(b) {
-      # Extract column for this category from each bootstrap sample
-      Yhat[[b]][, cat_idx]
-    })
-    
-    # Calculate statistics
-    mean_probs <- rowMeans(cat_probs)
-    sd_probs <- apply(cat_probs, 1, sd)
-    cv_probs <- sd_probs / mean_probs
-    
-    return(list(
-      mean = mean_probs,
-      sd = sd_probs,
-      cv = cv_probs,
-      min = apply(cat_probs, 1, min),
-      max = apply(cat_probs, 1, max)
-    ))
-  }
-  
-  # Analyze all categories
-  category_stats <- lapply(1:ncol(Yhat[[1]]), analyze_category)
-  
-  # Summarize results
-  cat("Category-level statistics across bootstrap samples:\n")
-  for (i in 1:length(category_stats)) {
-    cat("Category", i, "- Mean CV:", mean(category_stats[[i]]$cv), 
-        ", Max CV:", max(category_stats[[i]]$cv), "\n")
-  }
-  
-  # 2. Calculate LBW probability for each bootstrap sample
-  cat("\n===== LBW Probability Analysis =====\n")
-  
-  # Calculate LBW probability for each observation across bootstrap samples
-  lbw_probs <- matrix(0, nrow = nrow(Yhat[[1]]), ncol = B)
-  for (b in 1:B) {
-    lbw_probs[, b] <- rowSums(Yhat[[b]][, lbw.cols, drop = FALSE])
-  }
-  
-  # Calculate statistics
-  lbw_means <- rowMeans(lbw_probs)
-  lbw_sds <- apply(lbw_probs, 1, sd)
-  lbw_cvs <- lbw_sds / lbw_means
-  
-  # Summarize results
-  cat("LBW probability statistics:\n")
-  cat("Mean LBW probability:", mean(lbw_means), "\n")
-  cat("SD of mean LBW probabilities:", sd(lbw_means), "\n")
-  cat("Mean CV of LBW probabilities:", mean(lbw_cvs), "\n")
-  cat("Number of unique mean LBW probabilities:", length(unique(round(lbw_means, 4))), "\n")
-  
-  # 3. Check consistency of category proportions
-  cat("\n===== Category Proportion Consistency =====\n")
-  
-  # Calculate category proportions for each bootstrap sample
-  cat_props <- matrix(0, nrow = B, ncol = ncol(Yhat[[1]]))
-  colnames(cat_props) <- colnames(Yhat[[1]])
-  
-  for (b in 1:B) {
-    # Calculate mean probability for each category
-    cat_props[b, ] <- colMeans(Yhat[[b]])
-  }
-  
-  # Calculate statistics
-  cat_prop_means <- colMeans(cat_props)
-  cat_prop_sds <- apply(cat_props, 2, sd)
-  cat_prop_cvs <- cat_prop_sds / cat_prop_means
-  
-  # Create summary data frame
-  prop_summary <- data.frame(
-    category = colnames(cat_props),
-    mean_prob = cat_prop_means,
-    sd = cat_prop_sds,
-    cv = cat_prop_cvs
-  )
-  
-  # Print summary
-  print(prop_summary)
-  
-  # 4. Analyze terminal node assignment consistency
-  cat("\n===== Terminal Node Assignment Consistency =====\n")
-  
-  # Check if we can identify terminal nodes from probability patterns
-  # Create a function to identify unique probability vectors
-  identify_patterns <- function(b) {
-    # Round probabilities to reduce numerical noise
-    rounded_probs <- round(Yhat[[b]], 6)
-    
-    # Identify unique patterns
-    unique_patterns <- unique(apply(rounded_probs, 1, paste, collapse = ","))
-    
-    return(list(
-      num_patterns = length(unique_patterns),
-      patterns = unique_patterns
-    ))
-  }
-  
-  # Analyze patterns across bootstrap samples
-  pattern_counts <- sapply(1:B, function(b) identify_patterns(b)$num_patterns)
-  
-  # Summarize results
-  cat("Number of unique probability vectors per bootstrap sample:\n")
-  print(summary(pattern_counts))
-  
-  # Return the comprehensive analysis results
-  return(list(
-    category_stats = category_stats,
-    lbw_stats = list(means = lbw_means, sds = lbw_sds, cvs = lbw_cvs),
-    category_proportions = prop_summary,
-    pattern_counts = pattern_counts
-  ))
-}
-compare_category_predictions <- function(Yhat, category_idx) {
-  # Get total number of bootstrap samples
-  B <- length(Yhat)
-  
-  # Extract predictions for this category across all bootstrap samples
-  category_preds <- matrix(0, nrow = nrow(Yhat[[1]]), ncol = B)
-  for (b in 1:B) {
-    category_preds[, b] <- Yhat[[b]][, category_idx]
-  }
-  
-  # Calculate statistics
-  means <- rowMeans(category_preds)
-  sds <- apply(category_preds, 1, sd)
-  cvs <- sds / means
-  
-  # Plot results
-  par(mfrow = c(2, 2))
-  
-  # Plot 1: Distribution of mean probabilities
-  hist(means, 
-       main = paste("Distribution of Mean Probabilities -", colnames(Yhat[[1]])[category_idx]),
-       xlab = "Mean Probability", 
-       col = "lightblue", border = "white")
-  
-  # Plot 2: Distribution of standard deviations
-  hist(sds, 
-       main = "Distribution of Standard Deviations",
-       xlab = "Standard Deviation", 
-       col = "lightblue", border = "white")
-  
-  # Plot 3: Distribution of CVs
-  hist(cvs, 
-       main = "Distribution of Coefficients of Variation",
-       xlab = "CV", 
-       col = "lightblue", border = "white")
-  
-  # Plot 4: Scatter plot of SD vs. Mean
-  plot(means, sds, 
-       main = "Standard Deviation vs. Mean",
-       xlab = "Mean Probability", ylab = "Standard Deviation",
-       pch = 19, col = "blue")
-  
-  # Reset plot parameters
-  par(mfrow = c(1, 1))
-  
-  # Return statistics
-  return(list(
-    means = means,
-    sds = sds,
-    cvs = cvs,
-    overall_mean = mean(means),
-    overall_sd = sd(means),
-    mean_cv = mean(cvs)
-  ))
-}
-
-# Run for each category (example for categories 1, 6, and 11)
-cat1_analysis <- compare_category_predictions(Yhat, 1) # First category
-cat6_analysis <- compare_category_predictions(Yhat, 6) # Middle category
-cat11_analysis <- compare_category_predictions(Yhat, 11) # Last category (above_2.5kg)
-
-# Compare statistics across categories
-category_comparison <- data.frame(
-  category = c(colnames(Yhat[[1]])[1], colnames(Yhat[[1]])[6], colnames(Yhat[[1]])[11]),
-  mean_prob = c(cat1_analysis$overall_mean, cat6_analysis$overall_mean, cat11_analysis$overall_mean),
-  sd_prob = c(cat1_analysis$overall_sd, cat6_analysis$overall_sd, cat11_analysis$overall_sd),
-  mean_cv = c(cat1_analysis$mean_cv, cat6_analysis$mean_cv, cat11_analysis$mean_cv)
+#-----------------------------------------------------------
+# Visualize the bootstrap results
+#-----------------------------------------------------------
+is.high.risk.indices <- which(
+  X.matrix$mrace15 == 1 &
+    X.matrix$dmar == 0 & 
+    X.matrix$cig_0 == 1 &
+    X.matrix$sex == 1 &  # male 
+    X.matrix$mager == 0 &  # young
+    X.matrix$precare5 == 0 &  # not adequate prenatal
+    X.matrix$meduc == 0  # not high school grad
 )
 
-print(category_comparison)
-# Run the comprehensive analysis
-bootstrap_analysis <- analyze_bootstrap_samples(Yhat, lbw.cols)
+is.low.risk.indices <- which(
+  X.matrix$mrace15 == 0 &
+    X.matrix$dmar == 1 & 
+    X.matrix$cig_0 == 0 &
+    X.matrix$sex == 0 &  # female 
+    X.matrix$mager == 1 &  # older
+    X.matrix$precare5 == 0 &  # adequate prenatal
+    X.matrix$meduc == 1  # high school grad
+)
 
-# Create visualizations to show results
-par(mfrow = c(2, 1))
 
-# all category mean predicted probabilities
-hist(bootstrap_analysis$category_stats[[1]],
-     main = "Distribution of Mean Predicted Probabilities",
-     xlab = "Mean Probability", ylab = "Frequency",
-     col = "lightblue", border = "white")
+direct.bootstrap.calculation <- function(indicies, yhat.list = Yhat) {
+  B <- length(yhat.list)
+  K <- ncol(yhat.list[[1]])
+  
+  # for each b and category k, calculate the mean probability across B
+  prob.matrix <- matrix(0, nrow = B, ncol = K)
+  
+  for (b in 1:B) {
+    if (length(indicies) > 0) {
+      # Get probabilities for the selected indices in this bootstrap sample
+      prob.matrix[b, ] <- colMeans(yhat.list[[b]][indicies, , drop = FALSE])
+    }
+  }
+  
+  # mean probabilities by category
+  mean.probs <- colMeans(prob.matrix)
+  
+  # 95% percentile bootstrap conf int
+  ci.lwr <- apply(prob.matrix, 2, function(x) quantile(x, 0.025))
+  ci.upr <- apply(prob.matrix, 2, function(x) quantile(x, 0.975))
 
-# 2. Plot CV of category proportions
-barplot(bootstrap_analysis$category_proportions$cv, 
-        main = "Coefficient of Variation by Category",
-        xlab = "Category", ylab = "CV",
-        col = "lightblue",
-        names.arg = 1:nrow(bootstrap_analysis$category_proportions), 
-        las = 2, cex.names = 0.7)
+  return(list(
+    means = mean.probs,
+    lwr = ci.lwr,
+    upr = ci.upr
+  ))
+}
 
-# Reset plotting parameters
+
+high.risk.result <- direct.bootstrap.calculation(indicies = is.high.risk.indices, yhat.list = Yhat)
+high.risk.probs <- high.risk.result$means
+high.risk.lwr <- high.risk.result$lwr
+high.risk.upr <- high.risk.result$upr
+
+low.risk.result <- direct.bootstrap.calculation(indicies = is.low.risk.indices, yhat.list = Yhat)
+low.risk.probs <- low.risk.result$means
+low.risk.lwr <- low.risk.result$lwr
+low.risk.upr <- low.risk.result$upr
+
+
+K <- length(high.risk.probs)
+cat.labels <- paste0("C", 1:K)
+
+par(mfrow = c(2, 1), mar = c(2, 4, 2, 2))  # Reduced margins
+
+# top
+high.bars <- barplot(high.risk.probs, 
+                     main = "High Risk Group",
+                     xlab = "", ylab = "Probability",
+                     ylim = c(0, max(high.risk.upr) * 1.1),
+                     names.arg = cat.labels,  
+                     col = "red",
+                     cex.names = 0.8,
+                     cex.main = 1)
+
+arrows(high.bars, high.risk.lwr, 
+       high.bars, high.risk.upr, 
+       angle = 90, code = 3, length = 0.05, col = "black", lwd = 1.5)
+
+# bottom
+low.bars <- barplot(low.risk.probs,
+                    main = "Low Risk Group",
+                    xlab = "", ylab = "Probability",
+                    ylim = c(0, max(high.risk.upr) * 1.1),
+                    names.arg = cat.labels,
+                    col = "blue",
+                    cex.names = 0.8,
+                    cex.main = 1)
+
+arrows(low.bars, low.risk.lwr, 
+       low.bars, low.risk.upr, 
+       angle = 90, code = 3, length = 0.05, col = "black", lwd = 1.5)
+
+# overall title
+mtext("Birth Weight Category Probabilities with Error Bars", side = 3, line = 0, outer = TRUE, cex = 0.9)
 par(mfrow = c(1, 1))
 
 
-# 1. Validate full probability vectors
-cat("\n===== Full Probability Vector Validation =====\n")
-vector_validation <- validate_full_probability_vectors(dm.tree.b, data.frame(X.matrix))
-print(vector_validation)
-
-# 4. Compare with original data
-cat("\n===== Comparison with Original Data =====\n")
-data_comparison <- compare_with_original_data(dm.tree.b, data.frame(X.matrix), Y.df)
-print(data_comparison)
-
-
-
-
+cat("\nMean probabilities for all categories:\n")
+result.table <- data.frame(
+  cat = 1:K,
+  high.risk.prob = high.risk.probs, 
+  high.risk.lwr = high.risk.lwr,
+  high.risk.upr = high.risk.upr,
+  low.risk.prob = low.risk.probs,
+  low.risk.lwr = low.risk.lwr,
+  low.risk.upr = low.risk.upr
+)
+print(result.table)
 
 
+#-----------------------------------------------------------
+# Quick check for pred. prob. vectors 
+#-----------------------------------------------------------
+analyze.bootstrap.samples <- function(Y.hat) {
+  B <- length(Y.hat)
+  
+  lbw.cols <- get.category.cols(type = "lbw")
+  nbw.cols <- get.category.cols(type = "nbw")
+  
+  # --- Category-level variation ---
+  category.stats <- lapply(1:ncol(Y.hat[[1]]), function(i) {
+    probs <- sapply(Y.hat, function(b) b[, i])
+    list(
+      mean = rowMeans(probs),
+      sd = apply(probs, 1, sd),
+      cv = apply(probs, 1, sd) / rowMeans(probs)
+    )
+  })
+  
+  # --- LBW probability analysis ---
+  lbw.probs <- sapply(Y.hat, function(b) rowSums(b[, lbw.cols]))
+  lbw.means <- rowMeans(lbw.probs)
+  lbw.sds <- apply(lbw.probs, 1, sd)
+  lbw.cvs <- lbw.sds / lbw.means
+  
+  # # --- NBW probability analysis ---
+  # nbw.probs <- rows)
+  # nbw.means <- rowMeans(nbw.probs)
+  # nbw.sds <- apply(nbw.probs, 1, sd)
+  # nbw.cvs <- nbw.sds / nbw.means
+  
+  cat("LBW mean prob:", mean(lbw.means),
+      "| SD:", sd(lbw.means),
+      "| Mean CV:", mean(lbw.cvs), "\n")
+  
+  # cat("NBW mean prob:", mean(nbw.means),
+  #     "| SD:", sd(nbw.means),
+  #     "| Mean CV:", mean(nbw.cvs), "\n")
+  
+  # --- Category proportion consistency ---
+  category.props <- sapply(Y.hat, function(b) colMeans(b))
+  category.means <- rowMeans(category.props)
+  category.sds <- apply(category.props, 1, sd)
+  category.cvs <- category.sds / category.means
+  
+  proportion.summary <- data.frame(
+    # category = colnames(Y.hat[[1]]),
+    mean.prob = category.means,
+    sd = category.sds,
+    cv = category.cvs
+  )
+  print(proportion.summary)
+  
+  # --- Terminal node pattern consistency ---
+  pattern.counts <- sapply(Y.hat, function(b) {
+    length(unique(apply(round(b, 6), 1, paste, collapse = ",")))
+  })
+  cat("Unique terminal node patterns per sample:\n")
+  print(summary(pattern.counts))
+  
+  list(
+    category.stats = category.stats,
+    lbw.stats = list(means = lbw.means, sds = lbw.sds, cvs = lbw.cvs),
+    category.proportions = proportion.summary,
+    pattern.counts = pattern.counts
+  )
+}
+
+compare.category.predictions <- function(Y.hat, category.idx) {
+  B <- length(Y.hat)
+  category.preds <- sapply(Y.hat, function(b) b[, category.idx])
+  
+  means <- rowMeans(category.preds)
+  sds <- apply(category.preds, 1, sd)
+  cvs <- sds / means
+  
+  par(mfrow = c(3, 1))
+  
+  hist(means,
+       main = paste("Distribution of Mean Probabilities -", colnames(Y.hat[[1]])[category.idx]),
+       xlab = "Mean Probability", col = "lightblue", border = "white")
+  
+  hist(sds,
+       main = "Distribution of Standard Deviations",
+       xlab = "Standard Deviation", col = "lightblue", border = "white")
+  
+  hist(cvs,
+       main = "Distribution of Coefficients of Variation",
+       xlab = "CV", col = "lightblue", border = "white")
+  # 
+  # plot(means, sds,
+  #      main = "Standard Deviation vs. Mean",
+  #      xlab = "Mean Probability", ylab = "Standard Deviation",
+  #      pch = 19, col = "blue")
+  # 
+  par(mfrow = c(1, 1))
+  
+  list(
+    means = means,
+    sds = sds,
+    cvs = cvs,
+    overall.mean = mean(means),
+    overall.sd = sd(means),
+    mean.cv = mean(cvs)
+  )
+}
+
+validate.full.probability.vectors <- function(Yhat) {
+  validations <- lapply(seq_along(Yhat), function(i) {
+    probs <- Yhat[[i]]
+    
+    row.sums <- rowSums(probs)
+    all.rows.sum.to.1 <- all(abs(row.sums - 1) < .Machine$double.eps^0.5)
+    all.values.in.01 <- all(probs >= 0 & probs <= 1)
+    
+    if (!all.rows.sum.to.1) {
+      cat(sprintf("Warning (bootstrap %d): Not all rows sum to 1. Min: %.5f | Max: %.5f\n",
+                  i, min(row.sums), max(row.sums)))
+    }
+    if (!all.values.in.01) {
+      cat(sprintf("Warning (bootstrap %d): Some values outside [0,1] range.\n", i))
+    }
+    
+    faulty.rows <- which(abs(row.sums - 1) > .Machine$double.eps^0.5 |
+                           probs < 0 | probs > 1, arr.ind = TRUE)
+    
+    list(
+      bootstrap.index = i,
+      all.rows.sum.to.1 = all.rows.sum.to.1,
+      all.values.in.01 = all.values.in.01,
+      faulty.rows = faulty.rows
+    )
+  })
+  
+  return(validations)
+}
+
+bootstrap.analysis <- analyze.bootstrap.samples(Yhat)
+print(bootstrap.analysis$category.proportions)
+
+cat.1.analysis <- compare.category.predictions(Yhat, 1)
+cat.6.analysis <- compare.category.predictions(Yhat, 6)
+cat.10.analysis <- compare.category.predictions(Yhat, 10)
+# cat.11.analysis <- compare.category.predictions(Yhat, 11)
+
+# category.comparison <- data.frame(
+#   category = c(colnames(Yhat[[1]])[1], colnames(Yhat[[1]])[6], colnames(Yhat[[1]])[11]),
+#   mean.prob = c(cat.1.analysis$overall.mean, cat.6.analysis$overall.mean, cat.11.analysis$overall.mean),
+#   sd.prob = c(cat.1.analysis$overall.sd, cat.6.analysis$overall.sd, cat.11.analysis$overall.sd),
+#   mean.cv = c(cat.1.analysis$mean.cv, cat.6.analysis$mean.cv, cat.11.analysis$mean.cv)
+# )
+category.comparison <- data.frame(
+  category = c(colnames(Yhat[[100]])[1], colnames(Yhat[[100]])[6], colnames(Yhat[[100]])[10]),
+  mean.prob = c(cat.1.analysis$overall.mean, cat.6.analysis$overall.mean, cat.10.analysis$overall.mean),
+  sd.prob = c(cat.1.analysis$overall.sd, cat.6.analysis$overall.sd, cat.10.analysis$overall.sd),
+  mean.cv = c(cat.1.analysis$mean.cv, cat.6.analysis$mean.cv, cat.10.analysis$mean.cv)
+)
+
+print(category.comparison)
+
+hist(bootstrap.analysis$category.proportions$mean.prob,
+     main = "Distribution of Mean Predicted Probabilities",
+     xlab = "Mean Probability", col = "lightblue")
+
+vector.validations <- validate.full.probability.vectors(Yhat)
+print(vector.validations[1:5])
 
 
 
 
 
+compare.probability.matrices <- function(Yhat, alphavec, return.full.diff = FALSE) {
+  comparisons <- lapply(seq_along(Yhat), function(i) {
+    probs <- Yhat[[i]]
+    
+    if (!all(dim(probs) == dim(alphavec))) {
+      stop(sprintf("Dimension mismatch in bootstrap %d: Yhat has dim %s but alphavec has dim %s",
+                   i,
+                   paste(dim(probs), collapse = "x"),
+                   paste(dim(alphavec), collapse = "x")))
+    }
+    
+    diff.matrix <- probs - alphavec
+    max.abs.diff <- max(abs(diff.matrix))
+    mean.abs.diff <- mean(abs(diff.matrix))
+    
+    list(
+      bootstrap.index = i,
+      max.abs.diff = max.abs.diff,
+      mean.abs.diff = mean.abs.diff,
+      diff.matrix = if (return.full.diff) diff.matrix else NULL
+    )
+  })
+  
+  return(comparisons)
+}
 
 
-
-
-
-
-
+comparison.results <- compare.probability.matrices(Yhat, alphavec)
+str(comparison.results)
 
 
 
 
 #-----------------------------------------------------------
 # Depth distributions visualization
-
+#-----------------------------------------------------------
 library(reshape2)
 library(dplyr)
 library(ggplot2)
@@ -751,7 +919,6 @@ for (b in seq_len(B)){
     }
 }    
 
-#-----------------------------------------------------------
 co.occur.prop <- co.occur.mat / B
 avg.depths <- depth.sums / depth.counts
 depth.df <- data.frame(
@@ -1028,590 +1195,5 @@ print(n.vars.summary)
 
 save(bootstrap.tree.results,file = sprintf("%s/bootstrap_tree_results_%d.RData", results.pwd, year))
 
-### USE table-boot-freq.R to generate tables from this data
-
-
-
-
-
-#-----------------------------------------------------------
-# I) Continue with prediction interval calculations as before
-#-----------------------------------------------------------
-# Calculate bagged predictions from all bootstrap samples
-bagged.preds <- rowMeans(Yhat.all)
-
-# Calculate OOB predictions, ignoring NAs
-oob.preds <- rep(NA, n.rows)
-
-for(i in 1:n.rows) {
-  
-  # Get valid predictions for this row
-  valid_preds <- Yhat.oob[i, !is.na(Yhat.oob[i, ])]
-  
-  if(length(valid_preds) > 0) {
-    
-    # If we have valid predictions, use their mean
-    oob.preds[i] <- mean(valid_preds)
-  } else {
-    
-    # If all predictions are NA, use the bagged prediction
-    oob.preds[i] <- bagged.preds[i]
-    cat("Node", i, "had no OOB samples, using bagged prediction instead\n")
-  }
-}
-
-# Calculate confidence intervals
-lower.ci <- apply(Yhat.all, 1, function(x) quantile(x, alpha.sig / 2))
-upper.ci <- apply(Yhat.all, 1, function(x) quantile(x, 1 - alpha.sig / 2))
-interval.width <- upper.ci - lower.ci
-
-# Calculate prediction standard errors
-pred.se <- apply(Yhat.all, 1, function(x) sd(x))
-
-pred.results <- data.frame(
-  node = 1:n.rows,
-  bagged.pred = bagged.preds,
-  oob.pred = oob.preds,
-  se = pred.se,
-  lower.ci = lower.ci,
-  upper.ci = upper.ci,
-  width = interval.width
-)
-
-pred.results <- cbind(pred.results, X.matrix)
-
-bootstrap.tree.results <- list(
-  pred.results = pred.results,
-  # tree.structure = tree.structure,
-  var.freq.df = var.freq.df,
-  top.var.df = top.var.df,
-  n.vars.summary = n.vars.summary
-)
-
-library(dplyr)
-library(ggplot2)
-library(scales)
-library(gridExtra)
-library(viridis)
-
-# Original check.agreement function (unchanged)
-check.agreement <- function(data, col1, col2, decimal=4) {
-
-      # round both cols to specific decimal
-    round.col.1 <- round(data[[col1]], decimal)
-    round.col.2 <- round(data[[col2]], decimal)
-    
-    # agree? 
-    agreement <- round.col.1 == round.col.2
-    
-    # calc % agreement
-    percent.agreement <- mean(agreement, na.rm = TRUE) * 100
-    
-    # data.frame of disagreements 
-    disagreements <- data[!agreement, c("node", col1, col2)] %>%
-      mutate(
-        diff = abs(!!sym(col1) - !!sym(col2)),
-        diff.rounded = abs(round.col.1[!agreement] - round.col.2[!agreement])
-      )
-    
-    return(list(
-      agreement.percent = percent.agreement,
-      num.agreements = sum(agreement, na.rm = TRUE),
-      num.disagreements = sum(!agreement, na.rm = TRUE),
-      total.nodes = length(agreement), 
-      disagreements = disagreements,
-      mean.diff = mean(abs(data[[col1]] - data[[col2]]), na.rm = TRUE),
-      max.diff = max(abs(data[[col1]] - data[[col2]]), na.rm = TRUE)
-    ))
-}
-
-
-
-
-
-
-preds.sorted <- pred.results[order(pred.results$bagged.pred), ]
-lowest.5.pred <- head(preds.sorted, 5)
-highest.5.pred <- tail(preds.sorted, 5)
-highest.5.pred <- highest.5.pred[order(-highest.5.pred$bagged.pred), ]
-
-find.common.preds <- function(data) {
-  
-  preds <- c("sex", "dmar", "mrace15", "mager", "meduc", "precare5", "cig_0")
-  common <- c()
-  
-  for (pred in preds) {
-      values <- unique(data[[pred]])
-      if (length(values) == 1) {
-        common <- c(common, pred)
-      }
-    }
-    
-  return(common)
-}
-
-lowest.5.common <- find.common.preds(lowest.5.pred)
-highest.5.common <- find.common.preds(highest.5.pred)
-
-lowest.vals <- c(); highest.vals <- c()
-for (pred in lowest.5.common) {
-   lowest.vals <- c(lowest.vals, paste0(pred, " = ", lowest.5.pred[1, pred]))
-}
-for (pred in highest.5.common) {
-   highest.vals <- c(highest.vals, paste0(pred, " = ", highest.5.pred[1, pred]))
-}
-
-combined.data <- rbind(
-  cbind(Group = "Lowest 5", lowest.5.pred[, c("node", "bagged.pred", "sex", "dmar", "mrace15", "mager", "meduc", "precare5", "cig_0")]),
-  cbind(Group = "Highest 5", highest.5.pred[, c("node", "bagged.pred", "sex", "dmar", "mrace15", "mager", "meduc", "precare5", "cig_0")])
-)
-
-pred.desc <- function(data){
-    apply(data[, c("sex", "dmar", "mrace15", "mager", "meduc", "precare5", "cig_0")], 1, function(row) {
-      sex_desc <- ifelse(row["sex"] == 1, "Male", "Female")
-      dmar_desc <- ifelse(row["dmar"] == 1, "Married", "Not Married")
-      mrace15_desc <- ifelse(row["mrace15"] == 1, "Black", "Not Black")
-      mager_desc <- ifelse(row["mager"] == 1, "Age > 33", "Age ≤ 33")
-      meduc_desc <- ifelse(row["meduc"] == 1, "High School", "Not High School")
-      precare5_desc <- ifelse(row["precare5"] == 1, "Full Prenatal", "Not Full Prenatal")
-      cig_0_desc <- ifelse(row["cig_0"] == 1, "Smoker", "Non-smoker")
-      
-      paste(sex_desc, dmar_desc, mrace15_desc, mager_desc, meduc_desc, precare5_desc, cig_0_desc, sep = ", ")
-    })
-}
-
-combined.data$Description <- pred.desc(data=combined.data)
-
-
-create_latex_table <- function(data, common_low, common_high) {
-
-  require(xtable)
-  require(knitr)
-  
-  # Create detailed table
-  detailed_table <- data[, c("Group", "node", "bagged.pred", "Description")]
-  colnames(detailed_table) <- c("Group", "Node", "Bagged Probability", "Predictor Combination")
-  
-  # Create summary table of common predictors
-  common_table <- data.frame(
-    Group = c("Lowest 5", "Highest 5"),
-    Common_Predictors = c(paste(common_low, collapse = ", "), paste(common_high, collapse = ", ")),
-    Common_Values = c(paste(lowest.vals, collapse = ", "), paste(highest.vals, collapse = ", ")),
-    Mean_Bagged_Prob = c(mean(lowest.5.pred$bagged.pred), mean(highest.5.pred$bagged.pred))
-  )
-  colnames(common_table) <- c("Group", "Common Predictors", "Common Values", "Mean Bagged Probability")
-  
-  # Convert to LaTeX format
-  detailed_xtable <- xtable(detailed_table, 
-                            caption = "Detailed Comparison of Lowest and Highest Bagged Probability Classes",
-                            label = "tab:detailed_comparison")
-  
-  common_xtable <- xtable(common_table,
-                          caption = "Common Predictors Among Lowest and Highest Bagged Probability Classes",
-                          label = "tab:common_predictors")
-  
-  # Output LaTeX tables
-  detailed_latex <- print(detailed_xtable, 
-                          include.rownames = FALSE,
-                          floating = TRUE,
-                          table.placement = "htbp",
-                          sanitize.text.function = function(x) {x},
-                          caption.placement = "top",
-                          print.results = FALSE)
-  
-  common_latex <- print(common_xtable,
-                        include.rownames = FALSE,
-                        floating = TRUE, 
-                        table.placement = "htbp",
-                        sanitize.text.function = function(x) {x},
-                        caption.placement = "top",
-                        print.results = FALSE)
-  
-  # Create full LaTeX document
-  latex_doc <- c(
-    "\\documentclass{article}",
-    "\\usepackage{booktabs}",
-    "\\usepackage{siunitx}",
-    "\\usepackage{caption}",
-    "\\usepackage{threeparttable}",
-    "\\usepackage{array}",
-    "\\newcolumntype{L}{>{\\raggedright\\arraybackslash}X}",
-    "\\begin{document}",
-    "",
-    "% Common predictors table",
-    common_latex,
-    "",
-    "% Detailed comparison table",
-    detailed_latex,
-    "",
-    "\\end{document}"
-  )
-  
-  # Save LaTeX document
-  writeLines(latex_doc, "bagged_probability_tables.tex")
-  
-  # Return both tables
-  return(list(detailed_table = detailed_table, common_table = common_table))
-}
-
-tables <- create_latex_table(combined.data, lowest.vals, highest.vals)
-
-
-
-ggplot(plot.data, aes(x = reorder(as.factor(node), bagged.pred), y = bagged.pred, fill = group)) +
-  geom_bar(stat = "identity") +
-  labs(title = "Lowest and Highest Bagged Probabilities by Node",
-       x = "Node",
-       y = "Bagged Probability") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-sum.table <- data.frame(
-  Group = c("Lowest 5", "Highest 5"),
-  Common_Predictors = c(paste(lowest.vals, collapse = ", "), 
-                        paste(highest.vals, collapse = ", ")),
-  Mean_Bagged_Prob = c(mean(lowest.5.pred$bagged.pred), mean(highest.5.pred$bagged.pred))
-)
-
-
-
-
-#-------------------------------------------------------------
-# J. Visualize Bootstrap Results
-#-------------------------------------------------------------
-library(ggplot2)
-library(tidyr)
-
-create_publication_visuals <- function(data, agreement_results, decimal_places) {
-  
-    # Create a descriptive title based on decimal places
-    precision_description <- switch(as.character(decimal_places),
-                                    "1" = "one decimal place",
-                                    "2" = "two decimal places",
-                                    "3" = "three decimal places",
-                                    "4" = "four decimal places",
-                                    "5" = "five decimal places",
-                                    paste(decimal_places, "decimal places"))
-    
-    # Calculate absolute differences for all points
-    comparison_data <- data %>%
-      mutate(
-        diff = abs(bagged.pred - oob.pred),
-        agrees = round(bagged.pred, decimal_places) == round(oob.pred, decimal_places),
-        # Create a categorical variable for magnitude of difference
-        diff_category = case_when(
-          diff < 10^-(decimal_places+1) ~ "Virtually identical",
-          diff < 10^-decimal_places ~ "Minor difference",
-          diff < 10^-(decimal_places-1) ~ "Notable difference",
-          TRUE ~ "Substantial difference"
-        ),
-        # Convert to factor with ordered levels
-        diff_category = factor(diff_category, 
-                               levels = c("Virtually identical", "Minor difference", 
-                                          "Notable difference", "Substantial difference"))
-      )
-    
-    # 1. Create a scatterplot with enhanced visual elements
-    scatter_plot <- ggplot(comparison_data, aes(x = bagged.pred, y = oob.pred)) +
-      # Add reference line for perfect agreement
-      geom_abline(intercept = 0, slope = 1, color = "darkgray", linetype = "dashed", size = 0.8) +
-      
-      # Add a subtle confidence band (optional)
-      geom_smooth(method = "lm", color = "#3366CC", fill = "#3366CC", alpha = 0.1, se = TRUE) +
-      
-      # Add points with color based on agreement category
-      geom_point(aes(color = diff_category), size = 3, alpha = 0.7) +
-      
-      # Use a colorblind-friendly palette
-      scale_color_viridis_d(option = "plasma", end = 0.9, direction = -1, name = "Difference Category") +
-      
-      # Format axes as percentages for better readability
-      scale_x_continuous(labels = percent_format(accuracy = 0.1)) +
-      scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
-      
-      # Add informative labels
-      labs(
-        title = "Calibration Plot: Bagged vs. Out-of-Bag Predictions",
-        subtitle = paste0(round(agreement_results$agreement.percent, 1), 
-                          "% agreement to ", precision_description, 
-                          " (", agreement_results$num.agreements, 
-                          " of ", agreement_results$total.nodes, " nodes)"),
-        x = "Bagged Predictions (Probability)",
-        y = "Out-of-Bag Predictions (Probability)",
-        caption = paste("Mean absolute difference:", 
-                        format(agreement_results$mean.diff, scientific = FALSE, digits = 5),
-                        "| Maximum difference:", 
-                        format(agreement_results$max.diff, scientific = FALSE, digits = 5))
-      ) +
-      
-      # Use publication-quality theme
-      theme_minimal(base_size = 12) +
-      theme(
-        plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-        plot.subtitle = element_text(size = 12, hjust = 0.5),
-        legend.position = "bottom",
-        legend.title = element_text(size = 10, face = "bold"),
-        legend.text = element_text(size = 9),
-        axis.title = element_text(size = 11, face = "bold"),
-        panel.grid.minor = element_line(color = "gray95"),
-        panel.grid.major = element_line(color = "gray90"),
-        panel.border = element_rect(fill = NA, color = "gray80", size = 0.5)
-      ) +
-      
-      # Force 1:1 aspect ratio
-      coord_equal(xlim = c(min(comparison_data$bagged.pred) * 0.95, 
-                           max(comparison_data$bagged.pred) * 1.05),
-                  ylim = c(min(comparison_data$oob.pred) * 0.95, 
-                           max(comparison_data$oob.pred) * 1.05))
-    
-    # 2. Create a Bland-Altman plot (agreement plot) for detailed analysis
-    agreement_plot <- ggplot(comparison_data, 
-                             aes(x = (bagged.pred + oob.pred)/2, y = bagged.pred - oob.pred)) +
-      # Add reference line at zero
-      geom_hline(yintercept = 0, color = "darkgray", linetype = "dashed", size = 0.8) +
-      
-      # Add points with color based on agreement
-      geom_point(aes(color = diff_category), size = 3, alpha = 0.7) +
-      
-      # Use the same colorblind-friendly palette
-      scale_color_viridis_d(option = "plasma", end = 0.9, direction = -1, name = "Difference Category") +
-      
-      # Format x-axis as percentages
-      scale_x_continuous(labels = percent_format(accuracy = 0.1)) +
-      
-      # Add mean and +/- 1.96 SD reference lines
-      geom_hline(yintercept = mean(comparison_data$bagged.pred - comparison_data$oob.pred), 
-                 color = "#3366CC", linetype = "solid", size = 1) +
-      geom_hline(yintercept = mean(comparison_data$bagged.pred - comparison_data$oob.pred) + 
-                   1.96 * sd(comparison_data$bagged.pred - comparison_data$oob.pred), 
-                 color = "#3366CC", linetype = "dotted", size = 0.8) +
-      geom_hline(yintercept = mean(comparison_data$bagged.pred - comparison_data$oob.pred) - 
-                   1.96 * sd(comparison_data$bagged.pred - comparison_data$oob.pred), 
-                 color = "#3366CC", linetype = "dotted", size = 0.8) +
-      
-      # Add informative labels
-      labs(
-        title = "Bland-Altman Plot: Agreement Between Prediction Methods",
-        subtitle = "Differences between bagged and out-of-bag predictions",
-        x = "Mean of Bagged and OOB Predictions",
-        y = "Difference (Bagged - OOB)",
-        caption = "Solid blue line: mean difference | Dotted lines: 95% limits of agreement"
-      ) +
-      
-      # Use publication-quality theme
-      theme_minimal(base_size = 12) +
-      theme(
-        plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-        plot.subtitle = element_text(size = 12, hjust = 0.5),
-        legend.position = "bottom",
-        legend.title = element_text(size = 10, face = "bold"),
-        legend.text = element_text(size = 9),
-        axis.title = element_text(size = 11, face = "bold"),
-        panel.grid.minor = element_line(color = "gray95"),
-        panel.grid.major = element_line(color = "gray90"),
-        panel.border = element_rect(fill = NA, color = "gray80", size = 0.5)
-      )
-    
-    # Return both plots
-    return(list(
-      calibration_plot = scatter_plot,
-      agreement_plot = agreement_plot
-    ))
-}
-
-# Run the original agreement check
-agree.results <- check.agreement(data=bootstrap.tree.results$pred.results,
-                                 col1="bagged.pred",
-                                 col2="oob.pred",
-                                 decimal=2)
-
-# Create publication-quality visualizations
-publication_plots <- create_publication_visuals(
-  bootstrap.tree.results$pred.results, 
-  agree.results, 
-  decimal_places = 1
-)
-
-# Save the plots in high quality
-ggsave("bagged_oob_calibration_plot.pdf", publication_plots$calibration_plot, 
-       width = 8, height = 7, device = cairo_pdf)
-ggsave("bagged_oob_agreement_plot.pdf", publication_plots$agreement_plot, 
-       width = 8, height = 7, device = cairo_pdf)
-
-# Also save PNG versions for quick viewing
-ggsave("bagged_oob_calibration_plot.png", publication_plots$calibration_plot, 
-       width = 8, height = 7, dpi = 300)
-ggsave("bagged_oob_agreement_plot.png", publication_plots$agreement_plot, 
-       width = 8, height = 7, dpi = 300)
-
-# Print the agreement statistics
-cat("Agreement to", agree.results$decimal, "decimal places:", 
-    round(agree.results$agreement.percent, 2), "%\n")
-cat("Number of agreements:", agree.results$num.agreements, 
-    "out of", agree.results$total.nodes, "nodes\n")
-cat("Mean absolute difference:", agree.results$mean.diff, "\n")
-cat("Maximum absolute difference:", agree.results$max.diff, "\n")
-
-# Display the plots
-grid.arrange(publication_plots$calibration_plot, publication_plots$agreement_plot, ncol = 1)
-ggsave("combined_publication_plots.png", 
-       path = sprintf("%s/combined_publication_plots_%d.png", boot.pwd, year),
-       plot = grid.arrange(publication_plots$calibration_plot, publication_plots$agreement_plot, ncol = 1), 
-       width = 8, height = 14, dpi = 300)
-
-
-
-# 0. Internal consistency check
-coverage.check <- matrix(FALSE,nrow=n.rows,ncol=B)
-for(b in 1:B) {
-    # for each bootstrap sample, check if predictions are within CI bounds
-    coverage.check[, b] <- (Yhat.all[, b] >= lower.ci) & (Yhat.all[, b] <= upper.ci)
-}
-empirical.coverage <- rowMeans(coverage.check)
-pred.results$empirical.coverage <- empirical.coverage
-
-# visualize coverage check
-ggplot(pred.results, aes(x = empirical.coverage)) +
-  geom_histogram(bins = 30, fill = "darkblue", color = "white") +
-  geom_vline(xintercept = 0.95, color = "red", linetype = "dashed") +
-  theme_minimal() +
-  labs(title = "Empirical Coverage Rates of 95% Confidence Intervals",
-       x = "Coverage Rate", 
-       y = "Count",
-       caption = "Red line shows nominal 95% coverage") +
-  xlim(0.90, 1.0)
-ggsave(sprintf("%s/empirical_coverage_%d.png", boot.pwd, year), width = 8, height = 6)
-
-# 1. calibration check (bagged vs. oob) 
-
-calibration.data <- data.frame(
-  bagged = pred.results$bagged.pred,
-  oob = pred.results$oob.pred
-)
-calibration.data <- na.omit(calibration.data)
-ggplot(calibration.data, aes(x = bagged, y = oob)) +
-  geom_point(alpha = 0.6) +
-  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
-  geom_smooth(method = "loess", color = "blue") +
-  theme_minimal() +
-  labs(title = "Calibration Plot: Bagged vs. OOB Predictions",
-       x = "Bagged Predictions",
-       y = "Out-of-Bag Predictions",
-       caption = "Points close to diagonal indicate good calibration") +
-  coord_equal()
-ggsave(sprintf("%s/calibration_plot_%d.png", boot.pwd, year), width = 8, height = 8)
-
-
-# 1. prediction intervals
-ggplot(pred.results, aes(x = node, y = bagged.pred)) +
-  geom_point() +
-  geom_ribbon(aes(ymin = lower.ci, ymax = upper.ci), alpha = 0.2, fill = "blue") +
-  geom_line(color = "red") +
-  geom_errorbar(aes(ymin = lower.ci, ymax = upper.ci), width = 0.2, alpha = 0.5) +
-  theme_minimal() +
-  labs(title = "Bootstrap Prediction Intervals for Low Birth Weight Probability",
-       x = "Node Index", 
-       y = "Predicted LBW Probability",
-       caption = sprintf("Based on %d bootstrap samples", B)) +
-  theme(plot.title = element_text(size = 14, face = "bold"))
-ggsave(sprintf("%s/pred_interval_%d.png", boot.pwd, year), height = 10, width = 12)
-
-
-# 2. uncertainty vs. prediction values
-ggplot(pred.results, aes(x = bagged.pred, y = width)) +
-  geom_point(alpha = 0.6) +
-  geom_smooth(method = "loess") +
-  theme_minimal() +
-  labs(title = "Uncertainty vs. Predicted Probability",
-       x = "Predicted LBW Probability", 
-       y = "Width of 95% Prediction Interval")
-ggsave(sprintf("%s/uncertainty_vs_prediction_%d.png", boot.pwd, year), width = 8, height = 6)
-
-
-# 3. dist of predictions
-ggplot(pred.results, aes(x=bagged.pred)) + 
-  geom_histogram(bins = 50, fill = "steelblue", color="white") + 
-  theme_minimal() +
-  labs(title = "Distribution of Bagged Predictions for LBW Probability", 
-       x = "Predicted LBW Probability", 
-       y = "Count") +
-  theme(plot.title = element_text(size = 14, face = "bold"))
-ggsave(sprintf("%s/pred_dist_%d.png", boot.pwd, year), height = 8, width = 6)
-
-
-# 4. coefficient stability 
-nodes.to.plot <- c(1,10,50,100) 
-nodes.to.plot <- nodes.to.plot[nodes.to.plot <= n.rows]
-node.dists <- data.frame(matrix(NA,nrow=length(nodes.to.plot) * B, ncol=3))
-colnames(node.dists) <- c("node", "sample", "prediction")
-# extract prediction distribution
-row.idx <- 1
-for (i in 1:length(nodes.to.plot)) {
-  node <- nodes.to.plot[i]
-  for (b in 1:B) {
-    node.dists[row.idx, ] <- c(node, b, Yhat.all[node, b])
-    row.idx <- row.idx + 1
-  }
-}
-
-ggplot(node.dists, aes(x = prediction, fill = factor(node))) +
-  geom_density(alpha = 0.5) +
-  theme_minimal() +
-  labs(title = "Bootstrap Distribution of Predictions for Selected Nodes",
-       x = "Predicted LBW Probability", 
-       y = "Density",
-       fill = "Node") +
-  scale_fill_brewer(palette = "Set1")
-ggsave(sprintf("%s/bootstrap_dist_nodes_%d.png", boot.pwd, year), height=10,width=15)
-
-
-#-----------------------------------------------------------
-# K. Save Results
-#-----------------------------------------------------------
-# Save primary prediction results
-save(pred.results, file = sprintf("%s/bootstrap_pred_results_%d.RData", results.pwd, year))
-save(bootstrap.tree.results,file = sprintf("%s/bootstrap_tree_results_%d.RData", results.pwd, year))
-
-# Save raw bootstrap matrices for future analysis
-save(Yhat.all, file = sprintf("%s/Yhat_all_%d.RData", results.pwd, year))
-save(Yhat.oob, file = sprintf("%s/Yhat_oob_%d.RData", results.pwd, year))
-
-# Save aggregated predictions
-save(bagged.preds, oob.preds, lower.ci, upper.ci, 
-     file = sprintf("%s/bagged_oob_preds_%d.RData", results.pwd, year))
-
-# Print summary information
-cat("\nBootstrap Analysis Summary:\n")
-cat("------------------------\n")
-cat("Number of bootstrap samples:", B, "\n")
-cat("Average prediction interval width:", round(mean(interval.width), 4), "\n")
-cat("Min/Max predictions:", round(min(bagged.preds), 4), "/", round(max(bagged.preds), 4), "\n")
-if (exists("error.metrics")) {
-  cat("OOB RMSE:", round(oob.rmse, 4), "\n")
-}
-cat("Results saved to:", results.pwd, "\n")
-
-
 #-----------------------------------------------------------
 
-# use the alphavec parameter to explain approaches and results of sensitivity of multi. coefficient adjustment
-# see which rebinning techniques work the best.
-# use marginal quantiles to split/rebin data 10%, 20% etc. until 2.5kg. 
-
-# explain the different splitting results
-
-# dirichlet uniform: alphavec <- 1*rep(1/ncol(Y.df),ncol(Y.df))
-# vs. 
-# marginal: alphavec <- 1*colSums(Y.df)/sum(Y.df)
-
-# dont need to explain: quantile idea instead of incremental splits. split into 10 or 20 etc. 
-
-# bootstrap, sampling with replacement. drawing data from multinomial model from probabilities of that cell. 
-
-# dm.tree["splits"]
-# dm.tree["variable.importance"]
-# dm.tree["cptable"]
-# dm.tree["frame"]
-# printcp(dm.tree)
-
-# rpart.rules(dm.tree)
