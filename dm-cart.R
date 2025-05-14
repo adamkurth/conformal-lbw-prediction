@@ -1,4 +1,4 @@
-rm(list=ls())
+;rm(list=ls())
 library(rpart)
 library(ggplot2)
 library(xtable)
@@ -9,7 +9,7 @@ library(xtable)
 year <- 2021
 
 # Determine type based on data path
-use_without_2_5kg <- TRUE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
+use_without_2_5kg <- FALSE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
 type <- ifelse(use_without_2_5kg, 2, 1)
 
 # Set appropriate data path based on type
@@ -285,7 +285,9 @@ mypred <- function(fit, newdata = NULL, type = c("vector", "prob", "class", "mat
   }
 }
 
+#-----------------------------------------------
 # original
+#-----------------------------------------------
 #----------------- 4) pred() ------------------#
 # mypred <- function(fit, newdata = NULL, type = c("vector", "prob", "class", "matrix")) {
 #   # 1. argument setup
@@ -385,6 +387,7 @@ mypred <- function(fit, newdata = NULL, type = c("vector", "prob", "class", "mat
 
 dm.method <- list(init=myinit, eval=myeval, split=mysplit, pred=mypred, method="dm")
 # pred <- mypred(dm.tree, newdata = data.frame(X.matrix), type = "prob")
+
 
 #-----------------------------------------------------------
 # D. Fit rpart Tree Using Our Custom DM Method
@@ -563,7 +566,7 @@ is.high.risk.indices <- which(
   X.matrix$mrace15 == 1 &
     X.matrix$dmar == 0 & 
     X.matrix$cig_0 == 1 &
-    X.matrix$sex == 1 &  # male 
+    X.matrix$sex == 0 &  # female 
     X.matrix$mager == 0 &  # young
     X.matrix$precare5 == 0 &  # not adequate prenatal
     X.matrix$meduc == 0  # not high school grad
@@ -573,7 +576,7 @@ is.low.risk.indices <- which(
   X.matrix$mrace15 == 0 &
     X.matrix$dmar == 1 & 
     X.matrix$cig_0 == 0 &
-    X.matrix$sex == 0 &  # female 
+    X.matrix$sex == 1 &  # male 
     X.matrix$mager == 1 &  # older
     X.matrix$precare5 == 0 &  # adequate prenatal
     X.matrix$meduc == 1  # high school grad
@@ -619,56 +622,85 @@ low.risk.probs <- low.risk.result$means
 low.risk.lwr <- low.risk.result$lwr
 low.risk.upr <- low.risk.result$upr
 
-
 K <- length(high.risk.probs)
-cat.labels <- paste0("C", 1:K)
 
-par(mfrow = c(2, 1), mar = c(2, 4, 2, 2))  # Reduced margins
+
+
+# 
+if (type == 1) {
+  result.tab <- read.csv(sprintf("%s/result_table_1.csv", results.pwd))
+  result.tab[-1]
+} else {
+  result.tab <- read.csv(sprintf("%s/result_table_2.csv", results.pwd))
+  result.tab[-1]
+}
+
+# 
+result.tab.1 <- read.csv("~/Downloads/result_table_1.csv")[-1]
+result.tab.2 <- read.csv("~/Downloads/result_table_2.csv")[-1]
+diff.pi.hat <- result.tab.1$high.risk.prob[1:10] - result.tab.1$low.risk.prob[1:10]
+
+
+
+cat.labels <- paste0("C", 1:K)
+pdf(file = sprintf("%s/high_low_risk_pred_%d.pdf", boot.pwd, year), width = 8.5, height = 8)
+par(mfrow = c(2, 1), 
+    mar = c(3, 4.5, 3, 2),    # More space around individual plots
+    oma = c(2, 0, 4, 0))      # Larger outer margin at top for title and subtitle
 
 # top
 high.bars <- barplot(high.risk.probs, 
-                     main = "High Risk Group",
-                     xlab = "", ylab = "Probability",
+                     main = "",
+                     xlab = "", 
+                     ylab = "Probability",
                      ylim = c(0, max(high.risk.upr) * 1.1),
                      names.arg = cat.labels,  
                      col = "red",
-                     cex.names = 0.8,
-                     cex.main = 1)
+                     cex.names = 1.0,
+                     cex.axis = 1.0,
+                     border = "darkred")  # Add border for better definition
+title("High Risk Subgroup", line = 1, cex.main = 1.2)
 
 arrows(high.bars, high.risk.lwr, 
        high.bars, high.risk.upr, 
-       angle = 90, code = 3, length = 0.05, col = "black", lwd = 1.5)
+       angle = 90, code = 3, length = 0.05, 
+       col = "black", lwd = 1.5)
+
 
 # bottom
 low.bars <- barplot(low.risk.probs,
-                    main = "Low Risk Group",
-                    xlab = "", ylab = "Probability",
+                    main = "",  # Remove individual title
+                    xlab = "", 
+                    ylab = "Probability",
                     ylim = c(0, max(high.risk.upr) * 1.1),
                     names.arg = cat.labels,
                     col = "blue",
-                    cex.names = 0.8,
-                    cex.main = 1)
+                    cex.names = 1.0,
+                    cex.axis = 1.0,
+                    border = "darkblue")  # Add border
+
+title("Low Risk Subgroup", line = 1, cex.main = 1.2)
 
 arrows(low.bars, low.risk.lwr, 
        low.bars, low.risk.upr, 
-       angle = 90, code = 3, length = 0.05, col = "black", lwd = 1.5)
+       angle = 90, code = 3, length = 0.05, 
+       col = "black", lwd = 1.5)
 
-# overall title
-mtext("Birth Weight Category Probabilities with Error Bars", side = 3, line = 0, outer = TRUE, cex = 0.9)
+mtext(sprintf("Birth Weight Category Probabilities (%d)", year), 
+      side = 3, line = 2, outer = TRUE, cex = 1.4, font = 2)
+
+# Add subtitle
+mtext("Predicted probabilities with 95% confidence intervals", 
+      side = 3, line = 0.5, outer = TRUE, cex = 1.1)
+
+# Add note about categories if needed
+mtext("Categories represent different birth weight ranges", 
+      side = 1, line = 0, outer = TRUE, cex = 0.9, col = "darkgray")
+
+dev.off()
 par(mfrow = c(1, 1))
 
 
-cat("\nMean probabilities for all categories:\n")
-result.table <- data.frame(
-  cat = 1:K,
-  high.risk.prob = high.risk.probs, 
-  high.risk.lwr = high.risk.lwr,
-  high.risk.upr = high.risk.upr,
-  low.risk.prob = low.risk.probs,
-  low.risk.lwr = low.risk.lwr,
-  low.risk.upr = low.risk.upr
-)
-print(result.table)
 
 
 #-----------------------------------------------------------
