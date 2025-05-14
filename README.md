@@ -127,53 +127,18 @@ The DM-CART algorithm is designed to model the distribution of birth weights usi
 3. Download and place the U.S. Natality datasets in the `birthweight_data/` directory
    - Files should be named: `natality2020us-original.csv` and `natality2021us-original.csv`
 
-### DM-CART Analysis Pipeline
-
-The complete analysis pipeline consists of three sequential R scripts:
-
-1. **Data Preparation** (`quantile.R`):
+4. Run the data preprocessing script:
    ```r
-   # Choose analysis type:
-   use.without.2.5kg <- TRUE  # Type 2 (pure quantile binning)
-   # OR
-   use.without.2.5kg <- FALSE # Type 1 (with 2.5kg threshold)
-   
-   # This script:
-   # - Loads the 2020 natality data
-   # - Calculates LBW proportions (approximately 8% of births)
-   # - Creates quantile-based bins for birth weights
-   # - Establishes cutpoints for consistent binning
-   # - Generates Dirichlet prior parameters (alphavec) from 2020 data
-   ```
+    source("data_rebin.R")
+    ```
+    - This will create the processed data files in the `birthweight_data/rebin/` directory 
 
-2. **Data Preprocessing** (`data_rebin.R`):
+5. Run the DM-CART algorithm:
    ```r
-   # This script:
-   # - Loads the 2021 natality data
-   # - Applies the quantile cutpoints from 2020 data
-   # - Converts raw variables into binary predictors
-   # - Creates 128 maternal-infant profiles
-   # - Counts birth weight occurrences for each profile
-   # - Constructs the multinomial counts data
+   source("dm-cart.R")
    ```
-
-3. **DM-CART Model Building** (`custom-rpart.R`):
-   ```r
-   # Set parameters:
-   # use_without_2_5kg <- FALSE  # Type 1 analysis (with 2.5kg threshold)
-   # use_without_2_5kg <- TRUE   # Type 2 analysis (without threshold)
-   # B <- 10000  # Number of bootstrap iterations
-   
-   # This script:
-   # - Defines the custom DM-CART functions (init, eval, split, pred)
-   # - Fits the tree model to the 2021 data
-   # - Performs parametric bootstrap with 10,000 iterations
-   # - Analyzes variable importance and tree structures
-   # - Compares trees at different depth constraints
-   # - Generates visualizations of predictions and confidence intervals
-   # - Identifies high-risk and low-risk subgroups
-   ```
-
+   - This will fit the DM-CART model to the processed data and generate bootstrap ensemble
+  
 ### Key Customization Options
 
 - **Tree Complexity**: Modify `rpart.control()` parameters:
@@ -184,11 +149,6 @@ The complete analysis pipeline consists of three sequential R scripts:
 - **Bootstrap Size**: Adjust the number of bootstrap iterations:
   ```r
   B <- 10000  # Default is 10,000 iterations
-  ```
-
-- **Prior Strength**: Modify the Dirichlet prior concentration parameter:
-  ```r
-  # Higher values increase smoothing, lower values reduce it
   ```
 
 ## Data Description
@@ -208,8 +168,7 @@ The model uses seven binary predictors that define 128 (2^7) distinct maternal-i
 | **SMOKER** | `cig_0` | Smoking during pregnancy | 1 = Any smoking (cig_0>0), 0 = No smoking |
 
 ### Response Variable
-
-The response variable is birth weight, categorized into 10 quantile-based categories (Type 1) or 11 categories (Type 2) based on the following ranges:
+All birth weight (in g) observations are allocated into quantile-based categories (Type 1/Type 2) based on the following quantile ranges during the preprocessing procedure. The quantile ranges are defined as follows:
 
 | **Quantile** | **Range (g)** (Type 1: LBW + Normal) | **Prior (%)** | **Range (g)** (Type 2: LBW only) | **Prior (%)** |
 |--------------|--------------------------------------|---------------|----------------------------------|----------------|
@@ -225,10 +184,6 @@ The response variable is birth weight, categorized into 10 quantile-based catego
 | Q10          | 2460–2500                            | 0.80          | 2460–2500                        | 10             |
 | Normal       | >2500                                | 91.67         |                                  |                |
 
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Acknowledgements
 
