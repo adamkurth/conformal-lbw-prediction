@@ -5,9 +5,13 @@
 **Author:** Adam Kurth  
 **Department:** Department of Mathematical & Statistical Sciences  
 **Advisor/Committee Chair:** [Dr. P. Richard Hahn](https://math.la.asu.edu/~prhahn/)
+
 **Committee Members:** [Dr. Shuang Zhou](https://sites.google.com/view/shuangzhousomss), [Dr. Shiwei Lan](https://math.la.asu.edu/~slan/)
+
 **Degree:** Master of Science in Statistics
+
 **University:** Arizona State University, Tempe, AZ
+
 **Date:** May 2025
 
 ## Overview
