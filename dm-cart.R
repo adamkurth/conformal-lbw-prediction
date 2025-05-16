@@ -1,4 +1,4 @@
-;rm(list=ls())
+rm(list=ls())
 library(rpart)
 library(ggplot2)
 library(xtable)
@@ -7,8 +7,6 @@ library(xtable)
 # A. Load Data & Construct Matrices
 #-----------------------------------------------------------
 year <- 2021
-
-# Determine type based on data path
 use_without_2_5kg <- FALSE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
 type <- ifelse(use_without_2_5kg, 2, 1)
 
@@ -1226,6 +1224,3 @@ cat("\nSummary of Number of Variables Used:\n")
 print(n.vars.summary)
 
 save(bootstrap.tree.results,file = sprintf("%s/bootstrap_tree_results_%d.RData", results.pwd, year))
-
-#-----------------------------------------------------------
-
