@@ -1,3 +1,4 @@
+
 \section{Marginal Dirichlet-Multinomial (DM) Likelihood}
 \label{sec:ch2-likelihood}
 %Definition of log-likelihood in Bayesian models
@@ -6,23 +7,23 @@
 \subsection{Introduction}
 \label{sec:ch2-likelihood-introduction}
 
-In the previous section, we established the discretized LBW quantile categories for this study. Resulting in 10 LBW categories of quantile increments of 10\% and the aggregated eleventh category for NBW. Modeling the distribution of LBW count outcomes must require handling categorical partitions of the LBW categories, typically with small sample sizes in observed samples, thus zero counts in one or more categories. Relying on the standard maximum likelihood estimation (MLE) approach of observing raw proportion of observation counts, often results probability of zero assigned to some categories that are not observed in the sample. If we disregard this issue, the MLE implicitly eliminates such categories that have not already been recorded so far, which is an unreasonable assumption for further inference. Thus, a smoothing technique is required to prevent such categories with zero counts from being \emph{impossible} in future birth weight observations, while still balancing small enough probabilities to reflect how rarely (or never) they appear in the data. By introducing the Dirichlet prior, smoothing adds extra variability in the likelihood, called \textit{overdispersion}.
+In the previous section, we established the discretized birth-weight categories for this study. Resulting in ten LBW categories of quantile increments of 10\% and the aggregated eleventh category for NBW. Modeling the distribution of birth-weight counts must require handling categorical partitions of all birth-weight categories, typically with small sample sizes in observed samples, thus "zero-counts" in one or more categories. Relying on the standard maximum likelihood estimation (MLE) approach of observing raw proportion of observation counts, often results probability of zero assigned to some categories not observed in the sample. If we disregard this issue entirely, the MLE implicitly eliminates such categories that have not already been recorded so far, which is an unreasonable assumption for further inference. Thus, a smoothing technique is required to prevent such categories with zero-counts from being \emph{impossible} in future birth-weight observations, while still balancing small enough probabilities to reflect how rarely (or never) such events appear in the data, called \emph{overdispersion}. 
 
-One powerful and effective solution is through the Dirichlet-Multinomial (DM) model, which relies upon the Dirichlet-Multinomial conjugate pair, and interpretable via the Pólya urn scheme \parencite{mimno_polya, gundersen2020dirichlet-multinomial, minka2000estimating}. The Dirichlet's overdispersion, effectively injects "pseudo-counts" or zero-inflating prior observations in all birth weight categories \parencite{mimno_polya, wiki:dirichlet-multinomial}. This ensured that the marginal likelihood, or evidence, for any category remains strictly positive, i.e. non-zero probability assignment for unobserved categories \parencite{wiki:dirichlet-multinomial}. Here, \(\boldsymbol{\alpha} = (\alpha_1, \dots, \alpha_K)\) represent the Dirichlet hyperparameters, where each \(\alpha_k\) functions as a prior count for its respective category. In this section, we will discuss the notation of the natality dataset, formally derive the marginal DM likelihood criterion, and discuss how it is implemented in CART. By construction of the counts data, the actualized observations will follow a multinomial distribution, with a minor technicality in the standard form is discussed in Section~\ref{sec:ch2-likelihood-adjustment}. 
+One powerful and effective solution is through the Dirichlet-Multinomial (DM) model, which relies upon the Dirichlet-Multinomial conjugate pair, and interpretable via the Pólya urn scheme \parencite{mimno_polya, gundersen2020dirichlet-multinomial, minka2000estimating}. The Dirichlet's overdispersion, effectively injects "pseudo-counts" or "zero-inflating" prior observations in all birth-weight categories \parencite{mimno_polya, wiki:dirichlet-multinomial}. This ensured that the marginal likelihood, or evidence, for any category remains strictly positive, i.e. non-zero probability assignment for unobserved categories \parencite{wiki:dirichlet-multinomial}. Here, \(\boldsymbol{\alpha} = (\alpha_1, \dots, \alpha_K)\) represent the Dirichlet hyperparameters, where each \(\alpha_k\) functions as a prior count for its respective category. In this section, we will discuss the notation of the natality dataset, formally derive the marginal DM likelihood criterion, and discuss how it is implemented in CART. By construction of the counts data, the actualized observations will follow a multinomial distribution, with a minor technicality in the standard form is discussed in Section~\ref{sec:ch2-likelihood-adjustment}. 
 
-The Dirichlet prior's initial uncertainty and the actualized count observations following a multinomial distribution, the choice of the DM likelihood is an appropriate choice for birth weight modeling. The Bayesian approach gives the model flexibility, CART offers an interpretable algorithm for disentangling interactions, and modeling the full spectrum of birth weights gives the breadth for targeted LBW prediction. 
+The DM likelihood is an appropriate choice for birth-weight modeling given count observations. The Bayesian approach gives the model flexibility, CART offers an interpretable algorithm for disentangling interactions, and modeling the full spectrum of birth weights gives the breadth for targeted LBW prediction and intervention.
 
 \subsection{Data Format}
 \label{sec:ch2-data-format}
 
-Before deriving the marginal DM likelihood, it is best to describe the data format. We have \(K\in\{10,11\}\) birth weight categories, varying between 10 and 11 depending on model scope. The predictor matrix is fixed at \(\mathbf{X} \in \{0,1\}^{N \times 7}\), where \(N=128\) is the number of total rows (and classes) and each row \(\mathbf{x}_i \in \{0,1\}^7\) represents a dummy-encoded predictor vector for a given class \(i\). The count data is the response matrix \(\mathbf{Y} := [n_{i,k}]_{i=1,\dots,N}^{k = 1,\dots,K}\) of dimensions \(N \times K\), where \(n_{i,k}\) is a number of birth observations for class \(i\), and quantile \(k\). For class \(i=1,\dots,N\), each \(\mathbf{x}_i\) of \(\mathbf{X}\) is a 7-dimensional feature vector representing a unique combination of predictors. The corresponding row \(\mathbf{y}_i =(n_{i,1}, \dots, n_{i,K}) \) in \(\mathbf{Y}\) is of length \(K\) of counts observations for \(k = 1, \dots, K\) birth weight categories. In other words, for each unique predictor class \(\mathbf{x}_i\), \(\mathbf{y}_i\) tells us how many births fell into each category \(k\) with probability \(\boldsymbol{\theta}_i\). This setup is from the preprocessing steps described in Section~\ref{sec:ch2-preprocessing}, which dramatically consolidate the dataset into the counts data format. The \(N\) total classes each \(\mathbf{x}_i, \mathbf{y}_i\) pair concisely represent all predictors and corresponding birth weight response frequencies. 
+Before deriving the marginal DM likelihood, it is best to describe the data format. We have \(K\in\{10,11\}\) birth-weight categories, varying between ten and eleven depending on model scope. The predictor matrix is fixed at \(\mathbf{X} \in \{0,1\}^{N \times 7}\), where \(N=128\) is the number of total rows (and classes) where each row \(\mathbf{x}_i \in \{0,1\}^7\) represents a dummy-encoded predictor vector for a given class \(i\). The count data is the response matrix \(\mathbf{Y} := [n_{i,k}]_{i=1,\dots,N}^{k = 1,\dots,K}\) of dimensions \(N \times K\), where \(n_{i,k}\) is a number of birth observations for class \(i\), and quantile category \(k\). For class \(i=1,\dots,N\), each \(\mathbf{x}_i\) of \(\mathbf{X}\) is a 7-dimensional feature vector representing a unique maternal-infant combination of predictors. The corresponding row \(\mathbf{y}_i =(n_{i,1}, \dots, n_{i,K}) \) in \(\mathbf{Y}\) is of length \(K\) of counts observations for birth-weight categories \(k = 1, \dots, K\). In other words, for each unique predictor class \(\mathbf{x}_i\), \(\mathbf{y}_i\), tells us how many births fell into each category \(k\) with probability \(\boldsymbol{\theta}_i\). This setup is from the preprocessing steps described in Section~\ref{sec:ch2-preprocessing}, which dramatically consolidate the dataset into counts. The \(N\) total classes each \(\mathbf{x}_i, \mathbf{y}_i\) pair concisely represent all predictors and corresponding birth-weight response frequencies. 
 
-To illustrate, if \(K=3\) and a particular predictor vector \(\mathbf{x}_i\) appears 10 times in the data, with outcomes of 6 in class 1, 3 in class 2, and 1 in class 3, then \(\mathbf{y}_i = (6,3,1)\) and \(N_i = 6 + 3 + 1 = 10\). By using the count vectors for each predictor vector, we can apply the DM likelihood model for multivariate counts data.
+To illustrate, if \(K=3\) and a particular predictor vector \(\mathbf{x}_i\) appears 10 times in the data, with outcomes of 6 in class 1, 3 in class 2, and 1 in class 3, then \(\mathbf{y}_i = (6,3,1)\) and \(N_i = 6 + 3 + 1 = 10\). We can apply the DM likelihood model for multivariate, multinomial counts data.
 
 \subsection{Treatment of the Multinomial Coefficient}
 \label{sec:ch2-likelihood-adjustment}
 
-Before deriving the marginal DM likelihood, we will clarify why the usual multinomial coefficient is omitted. After collapsing the dataset into \(N\)  classes, each class \(i\) is summarized by its counts vector \(\mathbf{y}_i = (n_{i,1}, \dots n_{i,K})\) with the total number of counts in class \(i\) represented as \(N_i = \sum_{k=1}^K n_{i,k}\). In the classic multinomial probability mass function, the factor 
+Before deriving the marginal DM likelihood, we will clarify why the usual multinomial coefficient is omitted. After collapsing the dataset into \(N\)  classes, each class \(i\) is summarized by its counts vector \(\mathbf{y}_i = (n_{i,1}, \dots n_{i,K})\) with the total counts in class \(i\) represented as \(N_i = \sum_{k=1}^K n_{i,k}\). In the classic multinomial probability mass function, the factor 
 \begin{equation*}
     \label{eq:multinomial-coef}
     \mathrm{MultinomialCoeff}(n_{i,1}, \dots n_{i,K})
@@ -31,9 +32,9 @@ Before deriving the marginal DM likelihood, we will clarify why the usual multin
  \;=\; 
         \frac{N_i!}{\prod_{k=1}^K n_{i,k}!}
 \end{equation*} 
-enumerates every possible permutations of \(N_i\) births inside of class \(i\). Because the information of the raw sequence of individual counts is not kept by consolidating the dataset to counts data, we no longer model the possible orderings of \(N_i\) births, only the counts vector \(\mathbf{y}_i\). Because this coefficient is a constant with respect to the category probability vector \(\boldsymbol{\theta}_i\) \parencite{wiki:dirichlet-multinomial}, it plays no role in the likelihood-ratio comparisons and is therefore omitted from our criterion.
+enumerates every possible permutations of \(N_i\) births inside of class \(i\). Because the information of the raw sequence of individual counts is \emph{not kept} by consolidating the dataset into counts data, we no longer model the possible orderings of \(N_i\) births. Because this coefficient is constant with respect to the category probability vector \(\boldsymbol{\theta}_i\) \parencite{wiki:dirichlet-multinomial}, it plays no role in the likelihood-split comparisons and therefore is omitted from our criterion.
 
-To justify why this is the case. Suppose we partition \(N\) into two splits (instead of 10 or 11) \(N_1, N_2\) where \(N = N_1 + N_2\). Then the partitioned counts \(N_1,N_2\) have less possible permutations of \(n_{1,K}\) and \(n_{2,K}\) counts respectively. That is to say: 
+To justify why this is the case. Suppose we partition \(N\) into two splits (instead of 10 or 11) \(N_1, N_2\) where \(N = N_1 + N_2\). Then the partitioned counts \(N_1,N_2\) have less possible permutations of \(n_{1,K}\) and \(n_{2,K}\) counts, respectively. That is to say: 
 
 
 \[
@@ -64,7 +65,7 @@ The hierarchical model structure is as follows:
 
 Where \(N_i = \sum_{k=1}^{K}n_{i,k}\) is the row total and \(\boldsymbol{\theta}_i = (\theta_{i,1},\dots,\theta_{i,K})\) is the true (but unknown) category probabilities for class \(i\). 
 
-From here forward, we will omit the index \(i\) from \(\mathbf{x}_i, \mathbf{y}_i,\boldsymbol{\theta}_i\) to avoid confusion. This changes to counts vector \((n_{i,1}, \dots, n_{i,K})\) into \((n_{1}, \dots, n_{K})\), where \(n_1\) is naturally interpreted as the first 10\% quantile. Likewise let \(\boldsymbol{\theta} = (\theta_1, \dots, \theta_K)\) be underlying Dirichlet prior, where \(\theta_k\) is the probability of an observation falling into category \(k\). The Dirichlet prior \(p(\boldsymbol{\theta})\) is given hyperparameters \(\boldsymbol{\alpha}\) where each \(\alpha_k > 0\) obtains the density:
+From here forward, we will omit the index \(i\) from \(\mathbf{x}_i, \mathbf{y}_i,\boldsymbol{\theta}_i\) to avoid confusion. This changes to counts vector \((n_{i,1}, \dots, n_{i,K})\) to \((n_{1}, \dots, n_{K})\), where \(n_1\) is naturally interpreted as the first 10\% quantile. Likewise let \(\boldsymbol{\theta} = (\theta_1, \dots, \theta_K)\) be underlying Dirichlet prior, where \(\theta_k\) is the probability of an observation falling into category \(k\). The Dirichlet prior \(p(\boldsymbol{\theta})\) is given hyperparameters \(\boldsymbol{\alpha}\) where each \(\alpha_k > 0\) obtains the density:
 
 \[
     p(\boldsymbol{\theta})
@@ -78,7 +79,7 @@ From here forward, we will omit the index \(i\) from \(\mathbf{x}_i, \mathbf{y}_
     \prod_{k=1}^K \theta_k^{\alpha_k -1}
 \]
 
-for \(\theta_k \ge 0\), and \(\sum_k \theta_k = 1\). Here, \(B(\boldsymbol{\alpha})\) is the multivariate Beta function, serving as the normalizing constant. \(B(\boldsymbol{\alpha}) = \frac{\prod_{k=1}^K \Gamma(\alpha_k)}{\Gamma(\alpha_0)}\), with \(\alpha_0 = \sum_{k=1}^K \alpha_k\) for brevity. The Dirichlet component encodes our prior belief about the probabilities of \(\theta_k\) acting as "prior-counts" of category \(k\) \parencite{wiki:dirichlet-multinomial}. Given \(\boldsymbol{\theta}\), the probability of observing a specific count outcome follows the adjusted multinomial likelihood in Section~\ref{sec:ch2-likelihood-adjustment}. This is the likelihood of the category \(k\) for a given \(\theta_k\).
+for \(\theta_k \ge 0\), and \(\sum_k \theta_k = 1\). Here, \(B(\boldsymbol{\alpha})\) is the multivariate Beta function, serving as the normalizing constant. \(B(\boldsymbol{\alpha}) = \frac{\prod_{k=1}^K \Gamma(\alpha_k)}{\Gamma(\alpha_0)}\), with \(\alpha_0 = \sum_{k=1}^K \alpha_k\) for brevity. The Dirichlet component encodes our prior belief about the probabilities of \(\theta_k\) acting as "prior-counts" of category \(k\) \parencite{wiki:dirichlet-multinomial}. Given \(\boldsymbol{\theta}\), the probability of observing a specific count outcome follows the adjusted multinomial likelihood. This is the likelihood of the category \(k\) for a given \(\theta_k\).
 
 \[
     p(\mathbf{y} \mid \boldsymbol{\theta}, \mathbf{x}) 
@@ -88,7 +89,6 @@ for \(\theta_k \ge 0\), and \(\sum_k \theta_k = 1\). Here, \(B(\boldsymbol{\alph
     \prod_{k=1}^K \theta_k^{n_k} 
 \]
 Under this structure, the joint density of the data and latent probability vector is the product of the Dirichlet prior and adjusted multinomial likelihood. Substituting both components yields:
-
 \begin{align*}
     p(\mathbf{y}, \boldsymbol{\theta} \mid \mathbf{x}) 
     \;&=\; 
@@ -103,7 +103,7 @@ Under this structure, the joint density of the data and latent probability vecto
     \;&=\;
     \frac{\Gamma(\alpha_0)}{\prod_{k=1}^K \Gamma(\alpha_k)} 
     \prod_{k=1}^K \theta_k^{(n_k + \alpha_k) - 1}\\
-    &\varpropto \bigl( \theta_1^{(n_1+\alpha_1)-1},\ldots, \theta_1^{(n_K+\alpha_K)-1} \bigr) \sim \mathrm{Dirichlet} \bigl(\boldsymbol{\alpha}+\mathbf{y}\bigr) \quad \text{(posterior)}
+    &\varpropto \bigl( \theta_1^{(n_1+\alpha_1)-1},\ldots, \theta_K^{(n_K+\alpha_K)-1} \bigr) \sim \mathrm{Dirichlet} \bigl(\boldsymbol{\alpha}+\mathbf{y}\bigr) \quad \text{(posterior)}
 \end{align*}
 
 Here we see the Dirichlet prior's effect is to "shift" of exponent in \(\theta_k^{n_k}\) by \(\alpha_k-1\), adding \(\alpha_k\) to \(n_k\) in the exponent \parencite{mimno_polya}. To achieve the goal of the marginal likelihood, we integrate over all possible \(\boldsymbol{\theta}\) of the joint density.
@@ -157,7 +157,7 @@ where \(N = \sum_{k=1}^K n_k\). Now substitute the last line back into Equation~
     \end{aligned}
 \end{equation}
 
-Taking the log transform yields the equivalent form of which we directly implement Equation~\ref{eq:dm-log-likelihood} in our code: 
+Taking the log transform yields the equivalent form which we directly implement Equation~\ref{eq:dm-log-likelihood} in the objective function criterion in \texttt{rpart}: 
 
 \begin{equation}
     \begin{aligned}
@@ -173,13 +173,13 @@ Taking the log transform yields the equivalent form of which we directly impleme
     \end{aligned}
 \end{equation}
 
-The equations above can be recognized as the DM distribution, sometimes called Dirichlet Compound Multinomial or Pólya's urn distribution \parencite{mimno_polya}. This can be broken down component-wise to give an intuitive understanding: \( \frac{\Gamma(n_k + \alpha_k)}{\Gamma(\alpha_k)}\) shows observing \(n_k\) instances of category \(k\) updates the prior count \(\alpha_k\), the ratio \(\frac{\Gamma(\alpha_0)}{\Gamma(N + \alpha_0)}\) ensures that all the probabilities for all categories sum to 1, yielding the normalization factor across joint observation counts \parencite{gundersen2020dirichlet-multinomial, wiki:dirichlet-multinomial}. While \(\alpha_k > 0\), the likelihood will be nonzero even if \(n_k = 0\) for some categories and the prior \(\alpha_k\) acts as the smoothing term that guarantees \(p(\mathbf{y} \mid \boldsymbol{\alpha}) > 0\) for all possible outcomes \parencite{mimno_polya}. 
+The equations above can be recognized as the DM distribution, sometimes called Compound Multinomial or Pólya's urn distribution \parencite{mimno_polya}. This can be broken down component-wise to give an intuitive understanding: \( \frac{\Gamma(n_k + \alpha_k)}{\Gamma(\alpha_k)}\) shows observing \(n_k\) instances of category \(k\) updates the prior count \(\alpha_k\), the ratio \(\frac{\Gamma(\alpha_0)}{\Gamma(N + \alpha_0)}\) ensures that all the probabilities for categories sum to 1, yielding the normalization factor across joint observation counts \parencite{gundersen2020dirichlet-multinomial, wiki:dirichlet-multinomial}. While \(\alpha_k > 0\), the likelihood will be nonzero even if \(n_k = 0\) for some categories and the prior \(\alpha_k\) acts as the smoothing term guaranteeing \(p(\mathbf{y} \mid \boldsymbol{\alpha}) > 0\) for all possible outcomes \parencite{mimno_polya}. 
 
 \subsection{Splitting with Adjusted DM Likelihood in CART}
 \label{sec:ch3-splits-in-cart}
-Equation~\ref{eq:dm-log-likelihood} is the final log marginal DM likelihood (evidence) that will be implemented in CART. Now we can understand how CART uses this criterion for evaluating splits within the data. 
+Equation~\ref{eq:dm-log-likelihood} is the final log marginal DM likelihood that will be implemented in CART. Now we can understand how CART uses this criterion for evaluating possible splits of the data. 
 
-A successful decision tree will try to rid as much variation, or impurity, within a subgroup as it can, by proposing and evaluating splits on the predictors. For any dichotomous predictor under consideration, CART proposes a left and right split on this predictor and chooses the split that better explains the data. The split that is chosen is the one with the highest likelihood, indicating better model fit. Maximizing the improvement gain is equivalent to minimizing the node impurity.
+A successful decision tree will try to rid as much variation, or impurity, within a subgroup as it can, by proposing and evaluating splits on the predictors. For any dichotomous predictor under consideration, CART proposes a left and right split on this predictor and chooses the split that better explains the data. The split that is chosen is the one with the highest likelihood, indicating a better model fit. Maximizing the improvement gain is equivalent to minimizing the node impurity.
 
 Using the adjusted marginal log-likelihood as our impurity measure, denote \(\mathcal{L}_{\text{node}}\) for the likelihood for a node's data. Let a parent node count observations, \(\mathbf{y}_{\text{parent}}\) be split into  \(\mathbf{y}_{\text{left}},\mathbf{y}_{\text{right}}\)  we calculate first: \( 
     \mathcal{L}_{\text{parent}} = \log p(\mathbf{y}_{\text{parent}} \mid \boldsymbol{\alpha}, \mathbf{x})
@@ -193,10 +193,8 @@ and
 \) and calculate the improvement gain of the split as: 
 \[
     \Delta \mathcal{L} = \mathcal{L}_{\text{left}} + \mathcal{L}_{\text{right}} - \mathcal{L}_{\text{parent}}
-    % IS THIS DEVIANCE? 
-    % SHOW DEVIANCE
 \]
 
-Essentially, if \(\Delta\mathcal{L}\) is positive the split has results in a improvement where the DM criterion favors the split with more homogeneity. If the multinomial coefficient was included then for any partition, \(\mathcal{L}\) would directly reward partitions with the larger number of possible orderings of the data. As noted in Section~\ref{sec:ch2-likelihood-adjustment}, \(N\) would be "better" than the two smaller groups of size \(N_1\) and \(N_2\), irrespective of how the counts are distributed. The omission of the coefficient makes the adjusted log-likelihood evaluate splits solely on how they reflect the distributional fit. 
+Essentially, if \(\Delta\mathcal{L}\) is positive, the split results in an \emph{improvement} where the DM criterion favors the split with more homogeneity. If the multinomial coefficient was included then for any partition, \(\mathcal{L}\) would directly reward partitions with the larger number of possible orderings of the data. As noted in Section~\ref{sec:ch2-likelihood-adjustment}, \(N\) would be "better" than the two smaller groups of size \(N_1\) and \(N_2\), irrespective of how the counts are distributed. The omission of the coefficient makes the adjusted log-likelihood evaluate splits solely on how they reflect the distributional fit. 
 
-To illustrate how CART evaluates \(\Delta\mathcal{L}\), consider the scenario where a parent node with \(N\) observations is evenly split (50/50) between two nodes, with a symmetric prior \(\alpha_1 = \alpha_2\). Now we evaluate some predictor to split on. The marginal likelihood of both child nodes might not exceed that of the parent since its split evenly and thus no split is chosen. Conversely, if there's a predictor where one node gets all LBW observations, and the other all normal birth weights, the combined likelihood of child nodes would be much higher than the parent. This would cause a large \(\Delta\mathcal{L}\) and be a significant split for CART. This matches our intuitive goal of wanting to split on improved subclassification of the population.
+To illustrate how CART evaluates \(\Delta\mathcal{L}\), consider the scenario where a parent node with \(N\) observations is evenly split (50/50) between two nodes, with a symmetric prior \(\alpha_1 = \alpha_2\). Now we evaluate some predictor to split on. The marginal likelihood of both child nodes might not exceed that of the parent since its split evenly thus no split is chosen. Conversely, if there's a predictor where one node gets all LBW observations, and the other all NBW, the combined likelihood of child nodes would be much higher than the parent. This would cause a large \(\Delta\mathcal{L}\) and be a significant split for CART. This matches our intuitive goal of wanting to split on improved subclassification of the population.
