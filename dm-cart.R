@@ -7,7 +7,7 @@ library(xtable)
 # A. Load Data & Construct Matrices
 #-----------------------------------------------------------
 year <- 2021
-use_without_2_5kg <- TRUE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
+use_without_2_5kg <- FALSE  # Set to TRUE for type 2 (without 2.5kg), FALSE for type 1
 type <- ifelse(use_without_2_5kg, 2, 1)
 
 # Set appropriate data path based on type
